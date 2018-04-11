@@ -33,6 +33,9 @@ namespace {
 	}
 }
 
+
+
+
 // returns a matrix of Points representing the best absolute position
 Mat patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat est) {
 	assert(source.type() == target.type());
@@ -111,6 +114,135 @@ Mat patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat
 					//	improve_nnf(target_buffer, p, source, r, nnf, cost, patch_size);
 					//}
 					improve_nnf(target_buffer, p, source, clamp_rect(r, source_rect), nnf, cost, patch_size);
+				}
+			}
+		}
+
+	} // end iter
+
+
+	return nnf;
+}
+
+
+
+
+
+
+namespace {
+
+	// requires that the target is buffered images (with boarders equal to patch_size)
+	void improve_k2_nnf(Mat target, Point p, Mat source, Point q, Mat nnf, Mat cost, int patch_size) {
+		int hp1 = patch_size / 2;
+		int hp2 = patch_size - hp1;
+		float min_dis = norm(Vec2f(source.cols, source.rows)) * 0.05;
+
+		// get patches
+		auto patch_p = target(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
+		auto patch_q = source(Range(q.y - hp1, q.y + hp2), Range(q.x - hp1, q.x + hp2));
+
+		// cost (ssd)
+		float c = norm(patch_p, patch_q);
+
+		if (c < cost.at<Vec2f>(p)[0]) { // better than the first result
+			Point temp = nnf.at<Vec<Point, 2>>(p)[0];
+			nnf.at<Vec<Point, 2>>(p)[0] = q;
+			cost.at<Vec2f>(p)[0] = c;
+			// also try to push the best rest
+			improve_k2_nnf(target, p, source, temp, nnf, cost, patch_size);
+		}
+		//else if (c < cost.at<Vec2f>(p)[1]) { // better than second result and far from first result
+		else if (c < cost.at<Vec2f>(p)[1] && norm(Vec2i(q), Vec2i(nnf.at<Vec<Point, 2>>(p)[0])) > min_dis) { // better than second result and far from first result
+			nnf.at<Vec<Point, 2>>(p)[1] = q;
+			cost.at<Vec2f>(p)[1] = c;
+		}
+	}
+
+}
+
+
+// returns a matrix of Points representing the best absolute position
+Mat k2_patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat est) {
+	assert(source.type() == target.type());
+
+	int hp = patch_size / 2;
+
+	// Initalize
+	//
+	// nnf and cost matrices
+	RNG rng(9001); // opencv rng
+	Mat cost(target.rows, target.cols, CV_32FC2, Scalar(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity())); // 2-channel float
+	Mat nnf(target.rows, target.cols, CV_32SC4); // 4-channel (Vec<Point, 2>) 32-bit signed-int matrix
+	if (est.size() == nnf.size() && est.type() == nnf.type()) nnf = est.clone();
+	else {
+		for (int i = 0; i < nnf.rows; i++) {
+			auto row = nnf.ptr<Vec<Point, 2>>(i);
+				for (int j = 0; j < nnf.cols; j++) {
+					row[j][0] = Point(rng.uniform(hp, source.cols - hp - 1), rng.uniform(hp, source.rows - hp - 1));
+					row[j][1] = Point(rng.uniform(hp, source.cols - hp - 1), rng.uniform(hp, source.rows - hp - 1));
+				}
+		}
+	}
+
+	// edge buffered images (for improve_nnf only)
+	Mat target_buffer;
+	copyMakeBorder(target, target_buffer, patch_size, patch_size, patch_size, patch_size, BORDER_REPLICATE);
+
+	// for contains operations
+	Rect source_rect(Point(hp, hp), source.size() - Size2i(patch_size, patch_size));
+	Rect target_rect(Point(), target.size());
+
+
+	// calculate the correct cost for nnf init
+	for (int i = 0; i < nnf.rows; i++) {
+		for (int j = 0; j < nnf.cols; j++) {
+			improve_k2_nnf(target_buffer, Point(j, i), source, nnf.at<Point>(i, j), nnf, cost, patch_size);
+		}
+	}
+
+
+	// Iteration
+	//
+	for (int iter = 0; iter < iterations; iter++) {
+
+		// Propagation
+		//
+		for (int i = 0; i < nnf.rows; i++) {
+			for (int j = 0; j < nnf.cols; j++) {
+				int s = (iter % 2 == 0) ? 1 : -1;
+				Point p = (iter % 2 == 0) ? Point(j, i) : Point(nnf.cols - j - 1, nnf.rows - i - 1);
+				Point q1 = p - Point(0, s);
+				Point q2 = p - Point(s, 0);
+
+				for (int k = 0; k < 2; k++) {
+
+					if (target_rect.contains(q1)) {
+						Point cand = nnf.at<Vec<Point, 2>>(q1)[k] + Point(0, s);
+						improve_k2_nnf(target_buffer, p, source, clamp_rect(cand, source_rect), nnf, cost, patch_size);
+					}
+
+					if (target_rect.contains(q2)) {
+						Point cand = nnf.at<Vec<Point, 2>>(q2)[k] + Point(s, 0);
+						improve_k2_nnf(target_buffer, p, source, clamp_rect(cand, source_rect), nnf, cost, patch_size);
+					}
+				}
+			}
+		}
+
+		// Random Search
+		//
+		for (int i = 0; i < nnf.rows; i++) {
+			for (int j = 0; j < nnf.cols; j++) {
+				Point p(j, i);
+
+				for (int k = 0; k < 2; k++) {
+					// ever decreasing window for random search
+					for (float t = max(source.rows, source.cols); t >= 1; t /= 2) {
+
+						// random point centered around current best point
+						Point r = nnf.at<Vec<Point, 2>>(p)[k] + Point(rng.uniform(-t, t), rng.uniform(-t, t));
+						improve_k2_nnf(target_buffer, p, source, clamp_rect(r, source_rect), nnf, cost, patch_size);
+					}
 				}
 			}
 		}
