@@ -43,7 +43,26 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 
 
 #########################################################
-# Include source directory for absolute include patjs
+# Include Subprojects
+#########################################################
+
+add_subdirectory("${PROJECT_SOURCE_DIR}/ext/libtiff")
+include_directories("${PROJECT_SOURCE_DIR}/ext/libtiff/libtiff")
+include_directories("${PROJECT_BINARY_DIR}/ext/libtiff/libtiff")
+
+set(TIFF_FOUND true)
+set(TIFF_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/ext/libtiff/libtiff")
+set(TIFF_INCLUDE_DIRS "${PROJECT_SOURCE_DIR}/ext/libtiff/libtiff" "${PROJECT_BINARY_DIR}/ext/libtiff/libtiff")
+set(TIFF_LIBRARIES tiff)
+
+add_subdirectory("${PROJECT_SOURCE_DIR}/ext/libgeotiff")
+include_directories("${PROJECT_SOURCE_DIR}/ext/libgeotiff")
+include_directories("${PROJECT_BINARY_DIR}/ext/libgeotiff")
+
+
+
+#########################################################
+# Include source directory for absolute include paths
 #########################################################
 
 include_directories("${PROJECT_SOURCE_DIR}/src")
