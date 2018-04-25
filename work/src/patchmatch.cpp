@@ -205,21 +205,23 @@ Mat reconstruct(Mat source, Mat nnf, int patch_size) {
 //TODO
 // convert offset coordinates to color image
 cv::Mat nnfToImg(cv::Mat nnf, cv::Size s, bool absolute) {
+	assert(nnf.type() == CV_32FC2);
+
 	cv::Mat nnf_img(nnf.rows, nnf.cols, CV_8UC3, cv::Scalar(0, 0, 0));
 	cv::Rect rect(cv::Point(0, 0), s);
 
 	for (int r = 0; r < nnf.rows; r++) {
-		auto in_row = nnf.ptr<cv::Point>(r);
+		auto in_row = nnf.ptr<cv::Vec2f>(r);
 		auto out_row = nnf_img.ptr<cv::Vec3b>(r);
 		for (int c = 0; c < nnf.cols; c++) {
-			int x = absolute ? in_row[c].x : in_row[c].x + c;
-			int y = absolute ? in_row[c].y : in_row[c].y + r;
+			float x = absolute ? in_row[c][0] : in_row[c][0] + c;
+			float y = absolute ? in_row[c][1] : in_row[c][1] + r;
 			if (!rect.contains(cv::Point(x, y))) {
 				/* coordinate is outside the boundry, insert error of choice */
 			}
-			out_row[c][2] = int(x * 255.0 / s.width);  // cols -> red
-			out_row[c][1] = int(y * 255.0 / s.height); // rows -> green
-			out_row[c][0] = 255 - max(out_row[c][2], out_row[c][1]);
+			out_row[c][2] = int(x * 255 / s.width);  // cols -> red
+			out_row[c][1] = int(y * 255 / s.height); // rows -> green
+			out_row[c][0] = 0;// 255 - max(out_row[c][2], out_row[c][1]);
 		}
 	}
 
