@@ -320,7 +320,7 @@ namespace gain {
 	}
 
 
-	Mat synthesizeTerrain(Mat example, Size synth_size, int example_levels, int synth_levels) {
+	Mat synthesizeTerrain(Mat example, Size synth_size, int example_levels, int synth_levels, string tag="") {
 
 		assert(synth_levels > example_levels); // M > L
 
@@ -385,7 +385,7 @@ namespace gain {
 					coherence,
 					synth_pyramid[level],
 					heightoffset_pyramid[level],
-					util::stringf(level)
+					util::stringf(level, tag)
 				);
 			} // DEBUG //
 
@@ -408,8 +408,14 @@ namespace gain {
 		//Mat synth = synthesizeTerrain(testimage, testimage.size(), 6, 7);
 		
 		terrain test_terrain = terrainReadTIFF("work/res/southern_alps_s045e169.tif");
-		Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), 4, 7);
-		imwrite("output/syth.png", heightmapToImage(synth));
+		for (int m = 1; m < 8; m++) {
+			for (int l = m-1; l-->0; ) {
+				Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), l, m, util::stringf("m",m,"l",l));
+			}
+		}
+
+		//Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), 4, 7);
+		//imwrite("output/syth.png", heightmapToImage(synth));
 
 
 
