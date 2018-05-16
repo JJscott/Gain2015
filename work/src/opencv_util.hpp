@@ -10,32 +10,13 @@
 inline cv::Point clampToRect(const cv::Point& p, const cv::Rect& rect) {
 	using namespace cv;
 	using namespace std;
-	return Point(max(rect.x, min(p.x, rect.x + rect.width)), max(rect.y, min(p.y, rect.y + rect.height)));
+	return Point(clamp(p.x, rect.x, rect.x + rect.width - 1), clamp(p.y, rect.y, rect.y + rect.height - 1));
 }
 
 inline cv::Point clampToMat(const cv::Point& p, const cv::Mat& mat) {
 	using namespace cv;
 	using namespace std;
-	return Point(max(0, min(p.x, mat.cols-1)), max(0, min(p.y, mat.rows-1)));
-}
-
-
-// sample takes on int coordinates (like opencv)
-template<typename T>
-T sample(cv::Mat m, cv::Vec2f p) {
-	using namespace cv;
-	using namespace std;
-	p += Vec2f(.5);
-	T r = m.at<T>(0, 0) - m.at<T>(0, 0); // lol, get a proper zero value by cheating
-	for (int j = 0; j < 2; j++) {
-		for (int i = 0; i < 2; i++) {
-			Point p1(floor(j + p[0] - 0.5f), floor(i + p[1] - 0.5f));
-			Vec2f d(1.f - abs(p1.x + 0.5f - p[0]), 1.f - abs(p1.y + 0.5f - p[1]));
-			Point cp = clampToMat(p1, m);
-			r += m.at<T>(cp) * d[0] * d[1];
-		}
-	}
-	return r;
+	return Point(clamp(p.x, 0, mat.cols - 1), clamp(p.y, 0, mat.rows - 1));
 }
 
 namespace util {

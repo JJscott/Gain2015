@@ -34,8 +34,8 @@ namespace gain {
 				Point p(j / 2, i / 2);
 				Vec2f o(j % 2, i % 2);
 				Vec2f jitter(util::random<float>(-1, 1), util::random<float>(-1, 1));
-				nnfdest.at<Vec2f>(i, j) = nnf.at<Vec2f>(p) * 2 + o + (jitter * jitter_mag);
-				heightoffsetdest.at<float>(i, j) = heightoffset.at<float>(p);
+				nnfdest.at<Vec2f>(Point(j, i)) = nnf.at<Vec2f>(p) * 2 + o + (jitter * jitter_mag);
+				heightoffsetdest.at<float>(Point(j, i)) = heightoffset.at<float>(p);
 			}
 		}
 	}
@@ -66,7 +66,8 @@ namespace gain {
 				Point p(j, i);
 				for (int ii = 0; ii < 5; ii++) {
 					for (int jj = 0; jj < 5; jj++) {
-						Point q(max(0, min(j + jj - 2, data.cols - 1)), max(0, min(p.y + ii - 2, data.rows - 1)));
+						Point q(clamp(j + jj - 2, 0, data.cols - 1), clamp(i + ii - 2, 0, data.rows - 1));
+						// TODO check this shit
 						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * guassian_kernal[ii][jj];
 					}
 				}
@@ -115,23 +116,15 @@ namespace gain {
 		// delta set for diagonal neighbours
 		const Point diagonal_delta[]{{-1, -1}, { 1, -1}, {-1, 1}, {1, 1}};
 
-
-		// matrix set (for diagonal neighbour prediction)
-		Mat diagonal_mat[]{
-			Mat{ 2,2, CV_32F, Scalar(0) },
-			Mat{ 2,2, CV_32F, Scalar(0) },
-			Mat{ 2,2, CV_32F, Scalar(0) }
-		};
-		diagonal_mat[1].at<float>(0, 0) = 1;
-		diagonal_mat[2].at<float>(1, 1) = 1;
-
-
 		//  delta set for 3x3 neighbourhood
 		const Point neighbour_delta[]{
 			{ -1, -1 },{ -1, 0 },{ -1, 1 },
 			{ 0, -1 }, { 0, 0 }, { 0, 1 },
 			{ 1, -1 }, { 1, 0 }, { 1, 1 }
 		};
+
+		// blank matrix for constructing appearnace space thing for height offset
+		const Mat np_temp_zero = Mat::zeros(3, 4, CV_32FC1);
 
 
 
@@ -140,106 +133,129 @@ namespace gain {
 		cost_arr.create(synth.size(), CV_32F);
 
 		// 4 subpasses
-		const Point subpass_delta[]{ Point{ 0,0 }, Point{ 1,0 },Point{ 0,1 },Point{ 1,1 } };
+		const Point subpass_delta[]{{ 0,0 }, { 1,0 },{ 0,1 }, { 1,1 }};
 
 		for (int subpass = 0; subpass < 4; ++subpass) {
 
 			//#pragma omp parallel for
-			for (int j = 0; j < synth.cols - 1; j += 2) {
-				for (int i = 0; i < synth.rows - 1; i += 2) {
+			for (int j = 0; j < synth.cols; j += 2) {
+				for (int i = 0; i < synth.rows; i += 2) {
 
-					// the pixel we want to replace and it's neighbourhood
-					Point p = Point(i, j) + subpass_delta[subpass];
+					//
+					// Get the Pixel/Neighbourhood we are correcting
+					//
+
+					// the pixel we are correcting
+					Point p = Point(j, i) + subpass_delta[subpass];
+					if (p.y >= synth.rows || p.x >= synth.cols) continue; // bound check
+
+					// construct the neighbourhood
 					Mat np(1, 4, app_space.type(), Scalar(0, 0, 0, 0));
-
-					// mask for height offset to be combined with appearance vectors
-					Vec4f a(1, 0, 0, 0);
+					// temporary neighbourhood for sampling/averaging values
+					Mat np_temp_neighbour_coords(3, 4, CV_16SC2); // coordinates of neighbours and their adjacent offset neighbours
+					Mat np_temp_synth_coords(3, 4, synth.type()); // values in synth retrieved via np_temp_neighbour_coords
+					Mat np_temp_app(3, 4, app_space.type()); // values in app_space retrieved via np_temp_synth_coords
+					Mat np_temp_ho_single(3, 4, heightoffset.type()); // values in heightoffset retrieved via np_temp_neighbour_coords
+					Mat np_temp_ho_multi(3, 4, app_space.type()); // space out values (h, 0, 0, 0) from np_temp_ho_single
 
 					// for every diagonal neighbour
-					// compute an approximate appearance space vector and 
 					for (int n = 0; n < 4; ++n) {
-						// neighbour pixel
 						Point u = p + diagonal_delta[n];
-
-						// adjacent location offset (0,0), (1,0), (0,1)
-						Point vv[]{
+						Point vv[]{ // adjacent location offset (0,0), (+-1,0), (0,+-1)
 							{ 0, 0 },
-						{ diagonal_delta[n].x, 0 },
-						{ 0, diagonal_delta[n].y }
+							{ diagonal_delta[n].x, 0 },
+							{ 0, diagonal_delta[n].y }
 						};
 
-						// take neighbour and 2 adjacent locations in appearance space
-						// average them out as if we were predicting the change to this neighbour
-						// for future subpasses that rely on it
+						// 3x4 matrix, each column is a diagonal neighbour and its adjacent offset neighbours
 						for (int nn = 0; nn < 3; nn++) {
-							// we use sample_bilinear because we are dealing with coordinates that
-							// are not integer coords.
-							Point v = vv[nn]; // adjacent location offset (0,0), (1,0), (0,1)
-							Vec2f s = synth.at<Vec2f>(clampToMat(u + v, synth)); // the coord at the neighbours adjacent location
-
-							Vec4f temp_sample = sample<Vec4f>(app_space, s - Vec2f(v.x, v.y));  // an approximate appearance vector (for future value of u+v)
-							Vec4f temp_height = heightoffset.at<float>(clampToMat(u + v, synth)) * a;  // combined with the associated height offset (for current value of u+v)
-							np.at<Vec4f>(0, n) += temp_sample + temp_height;
-
+							//TODO some problem here with setting mapped values
+							Point temp = u + vv[nn];
+							np_temp_neighbour_coords.at<Vec2s>(nn, n) = Vec2s(temp.x, temp.y);
 						}
-
-						np.at<Vec4f>(0, n) /= 3; // average out
-
-						// otherwise we would do something like this instead
-						//np[n] = appearance.sample_bilinear(synthesis.at_clamp(u)) + (height_offset.at_clamp(u) * a);
 					}
 
+					// fill out the temp matricies
+					remap(synth, np_temp_synth_coords, np_temp_neighbour_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+					remap(app_space, np_temp_app, np_temp_synth_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+					remap(heightoffset, np_temp_ho_single, np_temp_neighbour_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+					merge(vector<Mat>{ np_temp_ho_single, np_temp_zero, np_temp_zero, np_temp_zero }, np_temp_ho_multi);
+
+					// average appearance space combine with height offset 
+					np_temp_app += np_temp_ho_multi;
+					reduce(np_temp_app, np, 0, CV_REDUCE_AVG);
+
+
+					cout << "p" << p << endl;
+					cout << "np" << endl;
+					cout << np << endl;
+
 
 					//
-					// Find the best matching Neighbourhood
+					// Find the best matching Pixel/Neighbourhood
 					//
 
-					// default
-					Vec2f best_q;
-					float best_h;
+					// collect candidates of neighbours
+					Mat candidates_neighbour_coords(1, 9, CV_16SC2); // coordinates of neighbours in synth
+					Mat candidates_neighbour_offset(1, 9, synth.type()); // the backward translation of neighbours in synth
+					Mat candidates_synth_coords(1, 9, synth.type()); // values in synth retrieved via candidates_neighbour_coords
+					Mat candidates_full(1, 9, coherence.type()); // values in candidates retrieved via (candidates_synth_coords - candidates_neighbour_offset)
+
+					// TODO
+					for (int i = 0; i < 9; ++i) {
+						Point temp = clampToMat(p + neighbour_delta[i], synth);
+						candidates_neighbour_coords.at<Vec2s>(0, i) = Vec2s(temp.x, temp.y);
+						candidates_neighbour_offset.at<Vec2f>(0, i) = -Vec2f(neighbour_delta[i].x, neighbour_delta[i].y);
+					}
+
+					// TODO
+					remap(synth, candidates_synth_coords, candidates_neighbour_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+					candidates_synth_coords -= candidates_neighbour_offset;
+					remap(coherence, candidates_full, candidates_synth_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+
+
+					// current best
+					Vec2f best_q = synth.at<Vec2f>(p);
+					float best_h = heightoffset.at<float>(p);
 					float best_cost = numeric_limits<float>::infinity();
 
-					// for self and all neighbours
-					// use k-cohearance to find a good match
 					for (int i = 0; i < 9; ++i) {
-						// convert half int coord to int coord (add half, round down)
-						Vec2i s(synth.at<Vec2f>(clampToMat(p + neighbour_delta[i], synth)) + Vec2f(0.5));
-
-						// the k-coherence candidates for coord s minus delta
-						Vec<Vec2f, 2> &candidates = coherence.at<Vec<Vec2f, 2>>(clampToMat(Point(s) - neighbour_delta[i], coherence));
+						Vec<Vec2f, 2> &candidates = candidates_full.at<Vec<Vec2f, 2>>(0, i);
 						for (size_t k = 0; k < 2; ++k) {
 
-
-							// the candidate 'q' with some height offset h, and its neighbourhood
+							// the candidate pixel
 							Vec2f q = candidates[k];
-							float h = 0;
+
+							// construct the neighbourhood
 							Mat nq(1, 4, app_space.type());
-
 							// for diagonal neighbours
+							Mat nq_temp_synth_coords(1, 4, CV_32FC2);
 							for (int n = 0; n < 4; ++n) {
-								nq.at<Vec4f>(0, n) = sample<Vec4f>(app_space, q + Vec2f(diagonal_delta[n].x, diagonal_delta[n].y)); // record appearance vector for neighbour
-								h += (np.at<Vec4f>(0, n)[0] - nq.at<Vec4f>(0, n)[0]); // accumulate an height difference between the neighbourhoods
+								nq_temp_synth_coords.at<Vec2f>(0, n) = q + Vec2f(diagonal_delta[n].x, diagonal_delta[n].y);
 							}
+							remap(app_space, nq, nq_temp_synth_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
 
-							// average out h and add to q's neighbourhood
-							// this minimizes the height difference between candidate and target
+							// the best height offset (TODO generic way to do this?)
+							// accumulate an average height difference between the neighbourhoods
+							float h = 0;
+							for (int n = 0; n < 4; ++n)
+								h += (np.at<Vec4f>(0, n)[0] - nq.at<Vec4f>(0, n)[0]);
 							h /= 4;
 							//h = 0; // uncomment for no height offset in the correction
 							for (int n = 0; n < 4; ++n)
 								nq.at<Vec4f>(0, n)[0] += h;
 
-
-
-							// compute the cost
-							// ssd of nq and np
-							float cost = 0;
-							for (int n = 0; n < 4; ++n) {
-								cost += norm(np, nq);
-							}
+							// compute the cost (ssd of nq and np)
+							float cost = norm(np, nq);
 
 							// if not the the lowest k-value, double the cost
 							//if (k > 0) cost *= 1.5;
 							if (k > 0) cost *= 2;
+
+
+							cout << "q" << q << endl;
+							cout << "nq" << endl;
+							cout << nq << endl;
 
 							// find best correction
 							if (cost < best_cost) {
@@ -248,11 +264,17 @@ namespace gain {
 								best_q = q;
 							}
 						}
+
 					}
+
+
+					cout << "best_q " << best_q  << endl;
+					cout << "best_h " << best_h << endl;
+					cout << "best_cost " << best_cost << endl;
 
 					synth.at<Vec2f>(p) = best_q;
 					heightoffset.at<float>(p) = best_h;
-					//cost.at(p) = best_cost;
+					//cost.at(p) = best_cost; // debug
 
 				}
 			}
@@ -408,13 +430,13 @@ namespace gain {
 		//Mat synth = synthesizeTerrain(testimage, testimage.size(), 6, 7);
 		
 		terrain test_terrain = terrainReadTIFF("work/res/southern_alps_s045e169.tif");
-		for (int m = 1; m < 8; m++) {
-			for (int l = m-1; l-->0; ) {
-				Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), l, m, util::stringf("m",m,"l",l));
-			}
-		}
+		//for (int m = 1; m < 8; m++) {
+		//	for (int l = m-1; l-->0; ) {
+		//		Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), l, m, util::stringf("m",m,"l",l));
+		//	}
+		//}
 
-		//Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), 4, 7);
+		Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), 4, 7);
 		//imwrite("output/syth.png", heightmapToImage(synth));
 
 
@@ -429,10 +451,10 @@ namespace gain {
 		//Mat ind[4];
 		//split(reduced, ind);
 
-		//imwrite("output/appearance_0.exr", ind[0]);
-		//imwrite("output/appearance_1.exr", ind[1]);
-		//imwrite("output/appearance_2.exr", ind[2]);
-		//imwrite("output/appearance_3.exr", ind[3]);
+		//imwrite(util::stringf("output/appearance_0.png"), heightmapToImage(ind[0]));
+		//imwrite(util::stringf("output/appearance_1.png"), heightmapToImage(ind[1]));
+		//imwrite(util::stringf("output/appearance_2.png"), heightmapToImage(ind[2]));
+		//imwrite(util::stringf("output/appearance_3.png"), heightmapToImage(ind[3]));
 
 
 
@@ -442,7 +464,7 @@ namespace gain {
 
 
 		//// K=2 Patchmatch
-		//Mat nnf = k2_patchmatch(terrain, terrain, 5, 4);
+		//Mat nnf = k2_patchmatch(testimage, testimage, 5, 4);
 
 		//// convert offset coordinates to color image
 		//Mat nnf_img_k1(nnf.rows, nnf.cols, CV_8UC3, Scalar(0, 0, 0));
@@ -452,11 +474,11 @@ namespace gain {
 		//	auto out_row_k1 = nnf_img_k1.ptr<Vec3b>(r);
 		//	auto out_row_k2 = nnf_img_k2.ptr<Vec3b>(r);
 		//	for (int c = 0; c < nnf.cols; c++) {
-		//		out_row_k1[c][2] = int((255.0 * in_row[c][0][0]) / terrain.cols); // cols -> r
-		//		out_row_k1[c][1] = int((255.0 * in_row[c][0][1]) / terrain.rows); // rows -> g
+		//		out_row_k1[c][2] = int((255.0 * in_row[c][0][0]) / testimage.cols); // cols -> r
+		//		out_row_k1[c][1] = int((255.0 * in_row[c][0][1]) / testimage.rows); // rows -> g
 
-		//		out_row_k2[c][2] = int((255.0 * in_row[c][1][0]) / terrain.cols); // cols -> r
-		//		out_row_k2[c][1] = int((255.0 * in_row[c][1][1]) / terrain.rows); // rows -> g
+		//		out_row_k2[c][2] = int((255.0 * in_row[c][1][0]) / testimage.cols); // cols -> r
+		//		out_row_k2[c][1] = int((255.0 * in_row[c][1][1]) / testimage.rows); // rows -> g
 		//	}
 		//}
 

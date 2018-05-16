@@ -53,4 +53,32 @@ int main( int argc, char** argv ) {
 	source_img.convertTo(test_img, CV_32F);
 	gain::test(test_img);
 
+
+
+	//Mat m(100, 100, CV_8UC3, Vec3b(0, 0, 0));
+	//Mat c(200, 200, CV_32FC2);
+	//Mat f(200, 200, CV_8UC3);
+
+
+	//for (int i = 0; i < 100; i++) {
+	//	for (int j = 0; j < 50; j++) {
+	//		m.at<Vec3b>(Vec2i(i, j)) = Vec3b(255, 255, 255);
+	//	}
+	//}
+
+	//for (int i = 0; i < 200; i++) {
+	//	for (int j = 0; j < 200; j++) {
+	//		c.at<Vec2f>(Vec2i(i, j)) = Vec2f(i/2+0.5, j / 2 + 0.5);
+	//	}
+	//}
+	//remap(m, f, c, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+
+
+	//namedWindow("m");
+	//imshow("m", m);
+
+	//namedWindow("f");
+	//imshow("f", f);
+
+	//waitKey(0);
 }
