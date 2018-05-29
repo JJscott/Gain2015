@@ -16,6 +16,9 @@ SET(sources
 
 	"gain.hpp"
 	"gain.cpp"
+
+	"scott.hpp"
+	"scott.cpp"
 	
 	"main.cpp"
 	"CMakeLists.txt"

@@ -11,6 +11,7 @@
 // project
 #include "patchmatch.hpp"
 #include "gain.hpp"
+#include "scott.hpp"
 #include "opencv_util.hpp"
 
 
@@ -51,9 +52,10 @@ int main( int argc, char** argv ) {
 	
 	Mat test_img(source_img.rows, source_img.cols, CV_32F);
 	source_img.convertTo(test_img, CV_32F);
-	gain::test(test_img);
-
-
+	
+	//gain::test(test_img);
+	scott::test(test_img);
+	
 
 
 

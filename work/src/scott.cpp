@@ -2,6 +2,7 @@
 // std
 #include <iostream>
 #include <vector>
+#include <queue>
 
 // opencv
 #include <opencv2/core.hpp>
@@ -9,16 +10,202 @@
 #include <opencv2/highgui.hpp>
 
 // project
+#include "scott.hpp"
+#include "terrain.hpp"
 #include "patchmatch.hpp"
 #include "opencv_util.hpp"
-#include "terrain.hpp"
 
 
 using namespace cv;
 using namespace std;
 
 
-namespace gain {
+namespace {
+	static cv::Point d8Flow[] = {
+		cv::Point(1, 0),
+		cv::Point(1, 1),
+		cv::Point(0, 1),
+		cv::Point(-1, 1),
+		cv::Point(-1, 0),
+		cv::Point(-1, -1),
+		cv::Point(0, -1),
+		cv::Point(1, -1)
+	};
+
+
+}
+
+namespace {
+
+
+
+	Mat priorityFloodFill(Mat inElevation) {
+		assert(inElevation.type() == CV_32FC1);
+
+		Mat elevation = inElevation.clone();
+
+		struct elevation_cell {
+			Point position;
+			float elevation; // needed for priority queue
+			elevation_cell(Point p, float e) : position(p), elevation(e) { }
+		};
+
+		auto less = [](const elevation_cell &lhs, const elevation_cell &rhs) -> bool {
+			// lower elevations had higher priority
+			return rhs.elevation < lhs.elevation;
+		};
+
+		priority_queue<elevation_cell, vector<elevation_cell>, decltype(less)> open(less);
+		deque<Point> pit;
+		Mat closed(elevation.size(), CV_8UC1, Scalar(0));
+		Rect bounds(Point(0, 0), closed.size());
+
+
+		// push edge cells
+		for (int i = 0; i < elevation.rows; ++i) {
+			Point p1(0, i);
+			open.emplace(p1, elevation.at<float>(p1));
+			closed.at<bool>(p1) = true;
+
+			Point p2(elevation.cols - 1, i);
+			open.emplace(p2, elevation.at<float>(p2));
+			closed.at<bool>(p2) = true;
+		}
+
+		for (int j = 0; j < elevation.cols; ++j) {
+			Point p1(j, 0);
+			open.emplace(p1, elevation.at<float>(p1));
+			closed.at<bool>(p1) = true;
+
+			Point p2(j, elevation.rows - 1);
+			open.emplace(p2, elevation.at<float>(p2));
+			closed.at<bool>(p2) = true;
+		}
+
+
+		while (!open.empty() || !pit.empty()) {
+			Point p;
+			// if there is no next pit cell
+			// or if the next open cell == next pit cell
+			if (pit.empty() || open.top().position == pit.front()) {
+				// use the next open cell
+				p = open.top().position;
+				open.pop();
+			}
+			else {
+				// use the next pit cell
+				p = pit.front();
+				pit.pop_front();
+			}
+
+			// for all neighbours
+			for (int n = 0; n < 8; ++n) {
+				Point pn = p + d8Flow[n];
+
+				// skip if closed, otherwise close
+				if (!bounds.contains(pn) || closed.at<bool>(pn)) continue;
+				closed.at<bool>(pn) = true;
+
+				// compute a slightly higher elevation for the original cell
+				float next_elevation = nextafter(elevation.at<float>(p), numeric_limits<float>::max());
+
+				// if the neighbour is equal to or lower than next_elevation set it and add it to pit
+				if (elevation.at<float>(pn) <= next_elevation) {
+					elevation.at<float>(pn) = next_elevation;
+					pit.emplace_back(pn);
+				}
+
+				// otherwise just add neighbour to open
+				else {
+					open.emplace(pn, elevation.at<float>(pn));
+				}
+			}
+		}
+
+		return elevation;
+	}
+
+
+
+
+
+	Mat d8FlowDirection(Mat elevation) {
+		assert(elevation.type() == CV_32FC1);
+
+		Mat direction(elevation.size(), CV_8UC1);
+
+		//#pragma omp parallel for
+		for (int j = 0; j < elevation.cols; ++j) {
+			for (int i = 0; i < elevation.rows; ++i) {
+				Point p(j, i);
+				float d_min = 0; // difference minimum (must be lower than zero)
+				int n_min = 0;
+				for (int n = 0; n < 8; ++n) {
+					Point pn = p + d8Flow[n];
+					float d = (elevation.at<float>(clampToMat(pn, elevation)) - elevation.at<float>(p)) / norm(d8Flow[n]);
+					if (d < d_min) {
+						d_min = d;
+						n_min = n;
+					}
+				}
+				direction.at<uchar>(p) = uchar(n_min);
+			}
+		}
+
+		return direction;
+	}
+
+
+
+
+
+	Mat d8FlowAccumulation(Mat &direction) {
+		assert(direction.type() == CV_8UC1);
+
+		Mat accumulation(direction.size(), CV_32FC1, Scalar(-1)); // float best option?
+		Rect bound(Point(0, 0), accumulation.size());
+
+		// recursive function that calcuates accumulation of neighbours then sums for a given p
+		std::function<float(const Point &)> getAccumulation = [&](const Point &p) -> float {
+			if (accumulation.at<float>(p) < 0) {
+				accumulation.at<float>(p) = 0;
+				for (int n = 0; n < 8; ++n) {
+					Point pn = p + d8Flow[n];
+					if (!bound.contains(pn)) continue;
+					if (pn + d8Flow[direction.at<uchar>(pn)] == p) {
+						accumulation.at<float>(p) += getAccumulation(pn) + 1;
+					}
+				}
+			}
+			return accumulation.at<float>(p);
+		};
+
+		for (int j = 0; j < direction.cols; ++j) {
+			for (int i = 0; i < direction.rows; ++i) {
+				Point p(j, i);
+				getAccumulation(p);
+			}
+		}
+
+		for (int j = 0; j < direction.cols; ++j) {
+			for (int i = 0; i < direction.rows; ++i) {
+				Point p(j, i);
+				accumulation.at<float>(p) = log(accumulation.at<float>(p) + 1);
+			}
+		}
+
+		return accumulation;
+	}
+
+}
+
+
+
+
+
+namespace scott {
+	using namespace gain;
+
 
 	void pyrUpJitter(Mat nnf, Mat heightoffset, Mat nnfdest, Mat heightoffsetdest, float jitter_mag) {
 		assert(nnf.type() == CV_32FC2);
@@ -41,11 +228,9 @@ namespace gain {
 	}
 
 
-
+	template<int A>
 	Mat appearance_space(Mat data) {
 		assert(data.type() == CV_32FC1);
-
-		const int numComponents = 4;
 
 		//Mat gaussian1d = getGaussianKernel(5, 1);
 		//Mat gaussian2d = gaussian1d * gaussian1d.t();
@@ -53,9 +238,9 @@ namespace gain {
 		// hardcoded normalized 5x5 gaussian kernal
 		const float guassian_kernal[5][5] = {
 			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 },
-			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062  },
-			{ 0.0219382,  0.0983203, 0.16210312, 0.0983203, 0.0219382  },
-			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062  },
+			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
+			{ 0.0219382,  0.0983203, 0.16210312, 0.0983203, 0.0219382 },
+			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
 			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 }
 		};
 
@@ -67,39 +252,107 @@ namespace gain {
 				for (int ii = 0; ii < 5; ii++) {
 					for (int jj = 0; jj < 5; jj++) {
 						Point q(clamp(j + jj - 2, 0, data.cols - 1), clamp(i + ii - 2, 0, data.rows - 1));
-						// TODO check this shit
 						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * guassian_kernal[ii][jj];
 					}
 				}
 			}
 		}
+		// reshape as a 1xn(25) matrix
 		Mat pcaset = neighbourhood_data.reshape(1, data.cols * data.rows);
 
-		// compute mean and PCA
+		// compute mean
 		Mat pcaset_mean;
-		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, numComponents);
+		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, A);
+
+		// compute PCA and transform to reduced eigen space
 		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
-
-		// compute mean of eigen vectors TODO
-		//Mat eigen_sum(numComponents, 1, CV_32F);
-		//reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
-		//for (int r = 0; r < 4; r++) *eigen_mean.ptr<float>(r) = norm(pca.eigenvectors.row(r));
-		//eigen_mean = eigen_mean.reshape(numComponents, 1);
-
-
-		// transform to reduced eigen space
 		Mat reduced = pcaset * pca.eigenvectors.t();
 
-		// manually set the mean (TODO investigate scaling of 4 components instead of setting of just 1)
+
+		Mat scaling_factor = pcaset_mean.clone();
 		for (int i = 0; i < reduced.rows; i++) {
-			(*reduced.ptr<Vec<float, 4>>(i))[0] = *pcaset_mean.ptr<float>(i);
+			*scaling_factor.ptr<float>(i) = *pcaset_mean.ptr<float>(i) / (*reduced.ptr<Vec<float, A>>(i))[0];
 		}
 
+		// manually scale the matrix
+		for (int i = 0; i < reduced.rows; i++) {
+			*reduced.ptr<Vec<float, A>>(i) *= *scaling_factor.ptr<float>(i);
+		}
+
+		//// manually set the mean
+		//for (int i = 0; i < reduced.rows; i++) {
+		//	(*reduced.ptr<Vec<float, A>>(i))[0] = *pcaset_mean.ptr<float>(i);
+		//}
+
+
 		// reshape and return
-		Mat final = reduced.reshape(numComponents, data.rows);
+		Mat final = reduced.reshape(A, data.rows);
 		return final;
 	}
 
+
+
+	template<int A>
+	Mat appearance_space(Mat elevation, Mat flow) {
+		assert(data.type() == CV_32FC1);
+
+		//Mat gaussian1d = getGaussianKernel(5, 1);
+		//Mat gaussian2d = gaussian1d * gaussian1d.t();
+
+		// hardcoded normalized 5x5 gaussian kernal
+		const float guassian_kernal[5][5] = {
+			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 },
+		{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
+		{ 0.0219382,  0.0983203, 0.16210312, 0.0983203, 0.0219382 },
+		{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
+		{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 }
+		};
+
+		// create the PCA set
+		Mat neighbourhood_data(data.size(), CV_32FC(25));
+		for (int i = 0; i < data.rows; i++) {
+			for (int j = 0; j < data.cols; j++) {
+				Point p(j, i);
+				for (int ii = 0; ii < 5; ii++) {
+					for (int jj = 0; jj < 5; jj++) {
+						Point q(clamp(j + jj - 2, 0, data.cols - 1), clamp(i + ii - 2, 0, data.rows - 1));
+						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * guassian_kernal[ii][jj];
+					}
+				}
+			}
+		}
+		// reshape as a 1xn(25) matrix
+		Mat pcaset = neighbourhood_data.reshape(1, data.cols * data.rows);
+
+		// compute mean
+		Mat pcaset_mean;
+		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, A);
+
+		// compute PCA and transform to reduced eigen space
+		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
+		Mat reduced = pcaset * pca.eigenvectors.t();
+
+
+		Mat scaling_factor = pcaset_mean.clone();
+		for (int i = 0; i < reduced.rows; i++) {
+			*scaling_factor.ptr<float>(i) = *pcaset_mean.ptr<float>(i) / (*reduced.ptr<Vec<float, A>>(i))[0];
+		}
+
+		// manually scale the matrix
+		for (int i = 0; i < reduced.rows; i++) {
+			*reduced.ptr<Vec<float, A>>(i) *= *scaling_factor.ptr<float>(i);
+		}
+
+		//// manually set the mean
+		//for (int i = 0; i < reduced.rows; i++) {
+		//	(*reduced.ptr<Vec<float, A>>(i))[0] = *pcaset_mean.ptr<float>(i);
+		//}
+
+
+		// reshape and return
+		Mat final = reduced.reshape(A, data.rows);
+		return final;
+	}
 
 
 
@@ -110,17 +363,17 @@ namespace gain {
 		assert(synth.size() == heightoffset.size());
 
 		// specific
-		assert(app_space.type() == CV_32FC4);
+		//assert(app_space.type() == CV_32FC(A));
 		assert(coherence.type() == CV_32FC4);
 
 		// delta set for diagonal neighbours
-		const Point diagonal_delta[]{{-1, -1}, { 1, -1}, {-1, 1}, {1, 1}};
+		const Point diagonal_delta[]{ { -1, -1 },{ 1, -1 },{ -1, 1 },{ 1, 1 } };
 
 		//  delta set for 3x3 neighbourhood
 		const Point neighbour_delta[]{
 			{ -1, -1 },{ -1, 0 },{ -1, 1 },
-			{ 0, -1 }, { 0, 0 }, { 0, 1 },
-			{ 1, -1 }, { 1, 0 }, { 1, 1 }
+		{ 0, -1 },{ 0, 0 },{ 0, 1 },
+		{ 1, -1 },{ 1, 0 },{ 1, 1 }
 		};
 
 		// blank matrix for constructing appearnace space thing for height offset
@@ -151,13 +404,13 @@ namespace gain {
 		cost_arr.create(synth.size(), CV_32F);
 
 		// 4 subpasses
-		const Point subpass_delta[]{{ 0,0 }, { 1,0 },{ 0,1 }, { 1,1 }};
+		const Point subpass_delta[]{ { 0,0 },{ 1,0 },{ 0,1 },{ 1,1 } };
 
 		for (int subpass = 0; subpass < 4; ++subpass) {
 
 			//#pragma omp parallel for
 			for (int j = 0; j < synth.cols; j += 2) {
-				for (int i = 0; i < synth.rows; i += 2) {	
+				for (int i = 0; i < synth.rows; i += 2) {
 
 
 					//
@@ -168,8 +421,8 @@ namespace gain {
 					Point p = Point(j, i) + subpass_delta[subpass];
 					if (p.y >= synth.rows || p.x >= synth.cols) continue; // bound check
 
-					// construct the neighbourhood
-					Mat np(1, 4, app_space.type(), Scalar(0, 0, 0, 0));
+																		  // construct the neighbourhood
+					Mat np(1, 4, app_space.type());
 					// temporary neighbourhood for sampling/averaging values
 					Mat np_temp_neighbour_coords(3, 4, CV_16SC2); // coordinates of neighbours and their adjacent offset neighbours
 					Mat np_temp_synth_coords(3, 4, synth.type()); // values in synth retrieved via np_temp_neighbour_coords
@@ -178,13 +431,13 @@ namespace gain {
 					Mat np_temp_ho_single(3, 4, heightoffset.type()); // values in heightoffset retrieved via np_temp_neighbour_coords
 					Mat np_temp_ho_multi(3, 4, app_space.type()); // space out values (h, 0, 0, 0) from np_temp_ho_single
 
-					// for every diagonal neighbour
+																  // for every diagonal neighbour
 					for (int n = 0; n < 4; ++n) {
 						Point u = p + diagonal_delta[n];
 						Point vv[]{ // adjacent location offset (0,0), (+-1,0), (0,+-1)
 							{ 0, 0 },
-							{ diagonal_delta[n].x, 0 },
-							{ 0, diagonal_delta[n].y }
+						{ diagonal_delta[n].x, 0 },
+						{ 0, diagonal_delta[n].y }
 						};
 
 						// 3x4 matrix, each column is a diagonal neighbour and its adjacent offset neighbours
@@ -281,11 +534,11 @@ namespace gain {
 					}
 
 
-					
+
 
 					synth.at<Vec2f>(p) = best_q;
 					heightoffset.at<float>(p) = best_h;
-					//cost.at(p) = best_cost; // debug
+					cost_arr.at<float>(p) = best_cost; // debug
 				}
 			}
 
@@ -294,15 +547,8 @@ namespace gain {
 	}
 
 
-
-
-
-
-
-
-
 	void synthesizeDebug(Mat example, Mat app_space, Mat cohearance, Mat synth, Mat height, std::string tag) {
-	
+
 		Mat ind[4];
 		split(app_space, ind);
 
@@ -343,11 +589,23 @@ namespace gain {
 	}
 
 
-	Mat synthesizeTerrain(Mat example, Size synth_size, int example_levels, int synth_levels, string tag="") {
+	void enforceFlow(Mat example, Mat synth, Mat heightoffset) {
+		Mat reconstructed;
+		reconstructed.create(synth.size(), example.type());
+		remap(example, reconstructed, synth, Mat(), INTER_LINEAR);
+		reconstructed += heightoffset;
+
+		// caluclate the change in height required to enforce flow
+		Mat enforced = priorityFloodFill(reconstructed);
+		heightoffset += enforced - reconstructed;
+	}
+
+
+	Mat synthesizeTerrain(Mat example, Size synth_size, int example_levels, int synth_levels, string tag = "") {
 
 		assert(synth_levels > example_levels); // M > L
 
-		// create exemplar pyramid
+											   // create exemplar pyramid
 		vector<Mat> example_pyramid(synth_levels);
 		buildPyramid(example, example_pyramid, synth_levels);
 
@@ -367,7 +625,7 @@ namespace gain {
 			example_pyramid[synth_levels - 1].cols / 2.f
 		));
 
-		//randu(synth_pyramid[synth_levels - 1], Scalar(2, 2), Scalar(example_pyramid[synth_levels - 1].cols - 3, example_pyramid[synth_levels - 1].rows - 3));
+		randu(synth_pyramid[synth_levels - 1], Scalar(2, 2), Scalar(example_pyramid[synth_levels - 1].cols - 3, example_pyramid[synth_levels - 1].rows - 3));
 
 
 
@@ -383,22 +641,21 @@ namespace gain {
 				0.4
 			);
 
-
 			// TODO move enventually
-			Mat app_space = appearance_space(example_pyramid[level]);
+			Mat app_space = appearance_space<4>(example_pyramid[level]);
 			Mat coherence = k2_patchmatch(app_space, app_space, 5, 4);
 
+			
+			// SCOTT ADDITION TO ALGORITHM
+			//enforceFlow(example_pyramid[level], synth_pyramid[level], heightoffset_pyramid[level]); //LOL
 
 
 			// correction
 			if (level < example_levels) {
-				// TODO iterative correction
-				for (int i = 0; i < 2; i++) { //hack for now
+				for (int i = 0; i < 8; i++) { //hack for now
 					correction(example_pyramid[level], app_space, coherence, synth_pyramid[level], heightoffset_pyramid[level]);
-					//correction2(example_pyramid[level], app_space, coherence, synth_pyramid[level], heightoffset_pyramid[level]);
 				}
 			}
-
 
 			{ // DEBUG //
 				synthesizeDebug(
@@ -426,12 +683,21 @@ namespace gain {
 
 
 
-	void test(Mat testimage) {
+
+
+
+
+
+
+
+	void test(Mat testImage) {
+		
+
 
 
 		// Test Gain
 		//Mat synth = synthesizeTerrain(testimage, testimage.size(), 6, 7);
-		
+
 		terrain test_terrain = terrainReadTIFF("work/res/southern_alps_s045e169.tif");
 		//terrain test_terrain(testimage, 10);
 
@@ -447,11 +713,28 @@ namespace gain {
 
 
 
-		//// Appearance-space
-		//Mat data(testimage.size(), CV_32FC1);
-		//testimage.convertTo(data, CV_32FC1);
 
-		//Mat reduced = appearance_space(data);
+
+
+		//// Direction algorithms
+		//imwrite("output/p1.png", gain::heightmapToImage(testImage));
+		//Mat elevation = priorityFloodFill(testImage);
+		//imwrite("output/p2.png", gain::heightmapToImage(elevation));
+		//Mat direction = d8FlowDirection(elevation);
+		//imwrite("output/p3.png", gain::heightmapToImage(direction));
+		//Mat accumulation = d8FlowAccumulation(direction);
+		//imwrite("output/p4.png", gain::heightmapToImage(accumulation));
+
+
+
+
+
+
+		//// Appearance-space
+		//Mat data(testImage.size(), CV_32FC1);
+		//testImage.convertTo(data, CV_32FC1);
+
+		//Mat reduced = appearance_space<4>(data);
 
 		//Mat ind[4];
 		//split(reduced, ind);
@@ -460,43 +743,7 @@ namespace gain {
 		//imwrite(util::stringf("output/appearance_1.png"), heightmapToImage(ind[1]));
 		//imwrite(util::stringf("output/appearance_2.png"), heightmapToImage(ind[2]));
 		//imwrite(util::stringf("output/appearance_3.png"), heightmapToImage(ind[3]));
-
-
-
-
-		//Mat terrain = reduced.clone();
-
-
-
-		//// K=2 Patchmatch
-		//Mat nnf = k2_patchmatch(testimage, testimage, 5, 4);
-
-		//// convert offset coordinates to color image
-		//Mat nnf_img_k1(nnf.rows, nnf.cols, CV_8UC3, Scalar(0, 0, 0));
-		//Mat nnf_img_k2(nnf.rows, nnf.cols, CV_8UC3, Scalar(0, 0, 0));
-		//for (int r = 0; r < nnf.rows; r++) {
-		//	auto in_row = nnf.ptr<Vec<Vec2f, 2>>(r);
-		//	auto out_row_k1 = nnf_img_k1.ptr<Vec3b>(r);
-		//	auto out_row_k2 = nnf_img_k2.ptr<Vec3b>(r);
-		//	for (int c = 0; c < nnf.cols; c++) {
-		//		out_row_k1[c][2] = int((255.0 * in_row[c][0][0]) / testimage.cols); // cols -> r
-		//		out_row_k1[c][1] = int((255.0 * in_row[c][0][1]) / testimage.rows); // rows -> g
-
-		//		out_row_k2[c][2] = int((255.0 * in_row[c][1][0]) / testimage.cols); // cols -> r
-		//		out_row_k2[c][1] = int((255.0 * in_row[c][1][1]) / testimage.rows); // rows -> g
-		//	}
-		//}
-
-		//imwrite("output/NNF_k1.png", nnf_img_k1);
-		//imwrite("output/NNF_k2.png", nnf_img_k2);
-
-
-
-
-		//terrain test = terrainReadTIFF("work/res/southern_alps_s045e169.tif");
-		//terrain test = terrainReadTIFF("work/res/mt_fuji_n035e138.tif"); 
-		//imwrite("output/test_img1.png", heightmapToImage(test.heightmap));
+		////cin.get();
 
 	}
-
 }

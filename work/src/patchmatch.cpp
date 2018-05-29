@@ -227,3 +227,5 @@ cv::Mat nnfToImg(cv::Mat nnf, cv::Size s, bool absolute) {
 
 	return nnf_img;
 }
+
+
