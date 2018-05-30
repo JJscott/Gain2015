@@ -41,23 +41,13 @@ namespace gain {
 	}
 
 
-
-	Mat appearance_space(Mat data) {
+	template<int AppComponents>
+	Mat appearanceSpace(Mat data) {
 		assert(data.type() == CV_32FC1);
 
-		const int numComponents = 4;
-
-		//Mat gaussian1d = getGaussianKernel(5, 1);
-		//Mat gaussian2d = gaussian1d * gaussian1d.t();
-
-		// hardcoded normalized 5x5 gaussian kernal
-		const float guassian_kernal[5][5] = {
-			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 },
-			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062  },
-			{ 0.0219382,  0.0983203, 0.16210312, 0.0983203, 0.0219382  },
-			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062  },
-			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 }
-		};
+		Mat gaussian1d;
+		getGaussianKernel(5, 1).convertTo(gaussian1d, CV_32FC1);
+		Mat gaussian2d = gaussian1d * gaussian1d.t();
 
 		// create the PCA set
 		Mat neighbourhood_data(data.size(), CV_32FC(25));
@@ -67,37 +57,42 @@ namespace gain {
 				for (int ii = 0; ii < 5; ii++) {
 					for (int jj = 0; jj < 5; jj++) {
 						Point q(clamp(j + jj - 2, 0, data.cols - 1), clamp(i + ii - 2, 0, data.rows - 1));
-						// TODO check this shit
-						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * guassian_kernal[ii][jj];
+						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * gaussian2d.at<float>(ii, jj);
 					}
 				}
 			}
 		}
 		Mat pcaset = neighbourhood_data.reshape(1, data.cols * data.rows);
 
-		// compute mean and PCA
+		// compute mean
 		Mat pcaset_mean;
-		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, numComponents);
 		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
 
-		// compute mean of eigen vectors TODO
-		//Mat eigen_sum(numComponents, 1, CV_32F);
-		//reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
-		//for (int r = 0; r < 4; r++) *eigen_mean.ptr<float>(r) = norm(pca.eigenvectors.row(r));
-		//eigen_mean = eigen_mean.reshape(numComponents, 1);
-
-
-		// transform to reduced eigen space
+		// compute PCA and transform to reduced eigen space
+		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, AppComponents);
 		Mat reduced = pcaset * pca.eigenvectors.t();
 
-		// manually set the mean (TODO investigate scaling of 4 components instead of setting of just 1)
-		for (int i = 0; i < reduced.rows; i++) {
-			(*reduced.ptr<Vec<float, 4>>(i))[0] = *pcaset_mean.ptr<float>(i);
+
+
+		// important parameter that switches between theorical and practical implementations for gain et al.
+		bool scale = false;
+		if (scale) {
+			// scale the matrix
+			Mat scaling_factor = pcaset_mean / reduced.col(0);
+			for (int c = 0; c < reduced.cols; c++)
+				reduced.col(c) = reduced.col(c).mul(scaling_factor);
 		}
 
+		// manually set the mean
+		for (int i = 0; i < reduced.rows; i++) {
+			reduced.at<float>(i, 0) = pcaset_mean.at<float>(i, 0);
+		}
+		//reduced.col(0) = pcaset_mean; // why doesn't this work?
+
+
 		// reshape and return
-		Mat final = reduced.reshape(numComponents, data.rows);
-		return final;
+		Mat appspace = reduced.reshape(AppComponents, data.rows);
+		return appspace;
 	}
 
 
@@ -280,9 +275,6 @@ namespace gain {
 
 					}
 
-
-					
-
 					synth.at<Vec2f>(p) = best_q;
 					heightoffset.at<float>(p) = best_h;
 					//cost.at(p) = best_cost; // debug
@@ -344,8 +336,10 @@ namespace gain {
 
 
 	Mat synthesizeTerrain(Mat example, Size synth_size, int example_levels, int synth_levels, string tag="") {
-
 		assert(synth_levels > example_levels); // M > L
+
+		// determinism
+		util::reset_random();
 
 		// create exemplar pyramid
 		vector<Mat> example_pyramid(synth_levels);
@@ -360,12 +354,22 @@ namespace gain {
 		buildPyramid(heightoffset, heightoffset_pyramid, synth_levels);
 
 
-		// initialization
-
+		// center initialization
 		synth_pyramid[synth_levels - 1].setTo(Scalar(
 			example_pyramid[synth_levels - 1].rows / 2.f,
 			example_pyramid[synth_levels - 1].cols / 2.f
 		));
+
+		//// random initialization
+		//for (int i = 0; i < synth_pyramid[synth_levels - 1].rows; ++i) {
+		//	for (int j = 0; j < synth_pyramid[synth_levels - 1].rows; ++j) {
+		//		synth_pyramid[synth_levels - 1].at<Vec2f>(i, j) = Vec2f(
+		//			util::random<float>(2, example_pyramid[synth_levels - 1].rows - 3),
+		//			util::random<float>(2, example_pyramid[synth_levels - 1].cols - 3)
+		//		);
+		//	}
+		//}
+
 
 		//randu(synth_pyramid[synth_levels - 1], Scalar(2, 2), Scalar(example_pyramid[synth_levels - 1].cols - 3, example_pyramid[synth_levels - 1].rows - 3));
 
@@ -385,7 +389,7 @@ namespace gain {
 
 
 			// TODO move enventually
-			Mat app_space = appearance_space(example_pyramid[level]);
+			Mat app_space = appearanceSpace<4>(example_pyramid[level]);
 			Mat coherence = k2_patchmatch(app_space, app_space, 5, 4);
 
 
@@ -395,7 +399,6 @@ namespace gain {
 				// TODO iterative correction
 				for (int i = 0; i < 2; i++) { //hack for now
 					correction(example_pyramid[level], app_space, coherence, synth_pyramid[level], heightoffset_pyramid[level]);
-					//correction2(example_pyramid[level], app_space, coherence, synth_pyramid[level], heightoffset_pyramid[level]);
 				}
 			}
 
@@ -451,7 +454,7 @@ namespace gain {
 		//Mat data(testimage.size(), CV_32FC1);
 		//testimage.convertTo(data, CV_32FC1);
 
-		//Mat reduced = appearance_space(data);
+		//Mat reduced = appearanceSpace<4>(data);
 
 		//Mat ind[4];
 		//split(reduced, ind);

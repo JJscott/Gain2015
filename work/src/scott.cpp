@@ -228,21 +228,16 @@ namespace scott {
 	}
 
 
-	template<int A>
-	Mat appearance_space(Mat data) {
+
+
+
+	template<int AppComponents>
+	Mat appearanceSpace(Mat data) {
 		assert(data.type() == CV_32FC1);
 
-		//Mat gaussian1d = getGaussianKernel(5, 1);
-		//Mat gaussian2d = gaussian1d * gaussian1d.t();
-
-		// hardcoded normalized 5x5 gaussian kernal
-		const float guassian_kernal[5][5] = {
-			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 },
-			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
-			{ 0.0219382,  0.0983203, 0.16210312, 0.0983203, 0.0219382 },
-			{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
-			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 }
-		};
+		Mat gaussian1d;
+		getGaussianKernel(5, 1).convertTo(gaussian1d, CV_32FC1);
+		Mat gaussian2d = gaussian1d * gaussian1d.t();
 
 		// create the PCA set
 		Mat neighbourhood_data(data.size(), CV_32FC(25));
@@ -252,61 +247,56 @@ namespace scott {
 				for (int ii = 0; ii < 5; ii++) {
 					for (int jj = 0; jj < 5; jj++) {
 						Point q(clamp(j + jj - 2, 0, data.cols - 1), clamp(i + ii - 2, 0, data.rows - 1));
-						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * guassian_kernal[ii][jj];
+						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * gaussian2d.at<float>(ii, jj);
 					}
 				}
 			}
 		}
-		// reshape as a 1xn(25) matrix
 		Mat pcaset = neighbourhood_data.reshape(1, data.cols * data.rows);
 
 		// compute mean
 		Mat pcaset_mean;
-		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, A);
+		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
 
 		// compute PCA and transform to reduced eigen space
-		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
+		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, AppComponents);
 		Mat reduced = pcaset * pca.eigenvectors.t();
 
 
-		Mat scaling_factor = pcaset_mean.clone();
-		for (int i = 0; i < reduced.rows; i++) {
-			*scaling_factor.ptr<float>(i) = *pcaset_mean.ptr<float>(i) / (*reduced.ptr<Vec<float, A>>(i))[0];
+
+		// important parameter that switches between theorical and practical implementations for gain et al.
+		bool scale = false;
+		if (scale) {
+			// scale the matrix
+			Mat scaling_factor = pcaset_mean / reduced.col(0);
+			for (int c = 0; c < reduced.cols; c++)
+				reduced.col(c) = reduced.col(c).mul(scaling_factor);
 		}
 
-		// manually scale the matrix
+		// manually set the mean
 		for (int i = 0; i < reduced.rows; i++) {
-			*reduced.ptr<Vec<float, A>>(i) *= *scaling_factor.ptr<float>(i);
+			reduced.at<float>(i, 0) = pcaset_mean.at<float>(i, 0);
 		}
-
-		//// manually set the mean
-		//for (int i = 0; i < reduced.rows; i++) {
-		//	(*reduced.ptr<Vec<float, A>>(i))[0] = *pcaset_mean.ptr<float>(i);
-		//}
+		//reduced.col(0) = pcaset_mean; // why doesn't this work?
 
 
 		// reshape and return
-		Mat final = reduced.reshape(A, data.rows);
-		return final;
+		Mat appspace = reduced.reshape(AppComponents, data.rows);
+		return appspace;
 	}
 
 
 
-	template<int A>
-	Mat appearance_space(Mat elevation, Mat flow) {
+	template<int AppComponents>
+	Mat appearanceSpace(Mat elevation, Mat flow) {
+		Mat data = elevation.clone();
 		assert(data.type() == CV_32FC1);
+		assert(flow.type() == CV_32FC1);
+		assert(data.size() == flow.size());
 
-		//Mat gaussian1d = getGaussianKernel(5, 1);
-		//Mat gaussian2d = gaussian1d * gaussian1d.t();
-
-		// hardcoded normalized 5x5 gaussian kernal
-		const float guassian_kernal[5][5] = {
-			{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 },
-		{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
-		{ 0.0219382,  0.0983203, 0.16210312, 0.0983203, 0.0219382 },
-		{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
-		{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 }
-		};
+		Mat gaussian1d;
+		getGaussianKernel(5, 1).convertTo(gaussian1d, CV_32FC1);
+		Mat gaussian2d = gaussian1d * gaussian1d.t();
 
 		// create the PCA set
 		Mat neighbourhood_data(data.size(), CV_32FC(25));
@@ -316,43 +306,134 @@ namespace scott {
 				for (int ii = 0; ii < 5; ii++) {
 					for (int jj = 0; jj < 5; jj++) {
 						Point q(clamp(j + jj - 2, 0, data.cols - 1), clamp(i + ii - 2, 0, data.rows - 1));
-						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * guassian_kernal[ii][jj];
+						neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * gaussian2d.at<float>(ii, jj);
 					}
 				}
 			}
 		}
-		// reshape as a 1xn(25) matrix
 		Mat pcaset = neighbourhood_data.reshape(1, data.cols * data.rows);
 
 		// compute mean
 		Mat pcaset_mean;
-		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, A);
+		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
 
 		// compute PCA and transform to reduced eigen space
-		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
+		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, AppComponents - 1);
 		Mat reduced = pcaset * pca.eigenvectors.t();
 
 
-		Mat scaling_factor = pcaset_mean.clone();
-		for (int i = 0; i < reduced.rows; i++) {
-			*scaling_factor.ptr<float>(i) = *pcaset_mean.ptr<float>(i) / (*reduced.ptr<Vec<float, A>>(i))[0];
+
+		// important parameter that switches between theorical and practical implementations for gain et al.
+		bool scale = false;
+		if (scale) {
+			// scale the matrix
+			Mat scaling_factor = pcaset_mean / reduced.col(0);
+			for (int c = 0; c < reduced.cols; c++)
+				reduced.col(c) = reduced.col(c).mul(scaling_factor);
 		}
 
-		// manually scale the matrix
+		// manually set the mean
 		for (int i = 0; i < reduced.rows; i++) {
-			*reduced.ptr<Vec<float, A>>(i) *= *scaling_factor.ptr<float>(i);
+			reduced.at<float>(i, 0) = pcaset_mean.at<float>(i, 0);
 		}
+		//reduced.col(0) = pcaset_mean; // why doesn't this work?
 
-		//// manually set the mean
-		//for (int i = 0; i < reduced.rows; i++) {
-		//	(*reduced.ptr<Vec<float, A>>(i))[0] = *pcaset_mean.ptr<float>(i);
-		//}
 
+		Mat complete;
+		hconcat(reduced, flow.reshape(1, data.cols * data.rows), complete);
 
 		// reshape and return
-		Mat final = reduced.reshape(A, data.rows);
-		return final;
+		Mat appspace = complete.reshape(AppComponents, data.rows);
+		return appspace;
 	}
+
+
+
+
+
+	//template<int AppComponents>
+	//Mat appearanceSpace(Mat elevation, Mat flow) {
+	//	assert(elevation.type() == CV_32FC1);
+	//	assert(flow.type() == CV_32FC1);
+
+	//	double emin, emax;
+	//	minMaxLoc(elevation, &emin, &emax);
+	//	Mat data = elevation / emax;
+	//	//Mat data = elevation.clone();
+
+
+	//	// flow norm
+	//	double fmin, fmax;
+	//	minMaxLoc(flow, &fmin, &fmax);
+	//	//Mat fdata = flow / fmax;
+
+	//	
+	//	Mat gaussian1d;
+	//	getGaussianKernel(5, 1).convertTo(gaussian1d, CV_32FC1);
+	//	Mat gaussian2d = gaussian1d * gaussian1d.t();
+
+	//	// create the PCA set
+	//	Mat neighbourhood_data(data.size(), CV_32FC(25));
+	//	//Mat fneighbourhood_data(fdata.size(), CV_32FC(25)); //temp flow
+	//	for (int i = 0; i < data.rows; i++) {
+	//		for (int j = 0; j < data.cols; j++) {
+	//			Point p(j, i);
+	//			for (int ii = 0; ii < 5; ii++) {
+	//				for (int jj = 0; jj < 5; jj++) {
+	//					Point q(clamp(j + jj - 2, 0, data.cols - 1), clamp(i + ii - 2, 0, data.rows - 1));
+	//					neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * gaussian2d.at<float>(ii, jj);
+	//					//neighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = data.at<float>(q) * guassian_kernal[ii][jj];
+	//					//fneighbourhood_data.at<Vec<Vec<float, 5>, 5>>(p)[ii][jj] = fdata.at<float>(q) * guassian_kernal[ii][jj]; //temp flow
+	//				}
+	//			}
+	//		}
+	//	}
+	//	Mat pcaset = neighbourhood_data.reshape(1, data.cols * data.rows);
+	//	//Mat fpcaset = fneighbourhood_data.reshape(1, data.cols * data.rows); //temp flow
+
+	//	// compute mean
+	//	Mat neighbourhood_mean, component_mean;
+	//	reduce(pcaset, neighbourhood_mean, 1, CV_REDUCE_SUM);
+	//	reduce(pcaset, component_mean, 0, CV_REDUCE_AVG);
+
+	//	//// debug1
+	//	//cout << "elevation : " << elevation.at<float>(100, 100) << endl;
+	//	//cout << "data : " << data.at<float>(100, 100) << endl;
+	//	//cout << "neighbourhood_data : " << neighbourhood_data.at<Vec<float, 25>>(100, 100) << endl;
+	//	//cout << "pcaset1 : " << pcaset.row(612) << endl;
+
+
+	//	// subtract the mean for components
+	//	//for (int r = 0; r < pcaset.rows; ++r)
+	//	//	pcaset.row(r) = pcaset.row(r) - component_mean.row(0);
+
+
+	//	// compute PCA and transform to reduced eigen space
+	//	PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, AppComponents-1);
+	//	Mat pca_reduced = pcaset * pca.eigenvectors.t();
+
+
+	//	// concat neighbourhood and PCA
+	//	Mat complete;
+	//	hconcat(neighbourhood_mean, pca_reduced, complete);
+	//	Mat appspace = Mat(complete * emax).reshape(AppComponents, data.rows);
+
+	//	//// debug2
+	//	//cout << pca.eigenvectors << endl;
+	//	cout << gaussian2d << endl;
+	//	//cout << "neighbourhood_mean : " << neighbourhood_mean.at<float>(612, 0) << endl;
+	//	//cout << "component_mean : " << component_mean << endl;
+	//	//cout << "pcaset2 : " << pcaset.row(612) << endl;
+	//	//cout << "pca_reduced : " << pca_reduced.row(612) << endl;
+	//	//cout << "complete : " << complete.row(612) << endl;
+	//	//cout << "appspace : " << appspace.at<Vec<float, AppComponents>>(100, 100) << endl;
+	//	////cin.get();
+
+	//	//TODO check the scale of the mean vs the PCA mean next
+
+	//	return appspace;
+	//}
+
 
 
 
@@ -453,7 +534,7 @@ namespace scott {
 					np_temp_synth_coords -= np_temp_synth_offset;
 					remap(app_space, np_temp_app, np_temp_synth_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
 					remap(heightoffset, np_temp_ho_single, np_temp_neighbour_coords, Mat(), INTER_NEAREST, BORDER_REPLICATE);
-					merge(vector<Mat>{ np_temp_ho_single, np_temp_zero, np_temp_zero, np_temp_zero }, np_temp_ho_multi);
+					merge(vector<Mat>{ np_temp_ho_single, np_temp_zero, np_temp_zero, np_temp_zero, np_temp_zero }, np_temp_ho_multi); // TODO needs to be same number of components as appspace
 
 					// average appearance space combine with height offset 
 					np_temp_app += np_temp_ho_multi;
@@ -549,13 +630,14 @@ namespace scott {
 
 	void synthesizeDebug(Mat example, Mat app_space, Mat cohearance, Mat synth, Mat height, std::string tag) {
 
-		Mat ind[4];
+		Mat ind[5];
 		split(app_space, ind);
 
 		imwrite(util::stringf("output/appearance_", tag, "_0.png"), heightmapToImage(ind[0]));
 		imwrite(util::stringf("output/appearance_", tag, "_1.png"), heightmapToImage(ind[1]));
 		imwrite(util::stringf("output/appearance_", tag, "_2.png"), heightmapToImage(ind[2]));
 		imwrite(util::stringf("output/appearance_", tag, "_3.png"), heightmapToImage(ind[3]));
+		imwrite(util::stringf("output/appearance_", tag, "_4.png"), heightmapToImage(ind[4]));
 
 		imwrite(util::stringf("output/example_", tag, ".png"), heightmapToImage(example));
 		imwrite(util::stringf("output/syth_nnf_", tag, ".png"), nnfToImg(synth, example.size()));
@@ -603,9 +685,13 @@ namespace scott {
 
 	Mat synthesizeTerrain(Mat example, Size synth_size, int example_levels, int synth_levels, string tag = "") {
 
-		assert(synth_levels > example_levels); // M > L
+		// M > L
+		assert(synth_levels > example_levels); 
 
-											   // create exemplar pyramid
+		// determinism
+		util::reset_random();
+
+		// create exemplar pyramid
 		vector<Mat> example_pyramid(synth_levels);
 		buildPyramid(example, example_pyramid, synth_levels);
 
@@ -625,8 +711,16 @@ namespace scott {
 			example_pyramid[synth_levels - 1].cols / 2.f
 		));
 
-		randu(synth_pyramid[synth_levels - 1], Scalar(2, 2), Scalar(example_pyramid[synth_levels - 1].cols - 3, example_pyramid[synth_levels - 1].rows - 3));
 
+		//// random initialization
+		//for (int i = 0; i < synth_pyramid[synth_levels - 1].rows; ++i) {
+		//	for (int j = 0; j < synth_pyramid[synth_levels - 1].rows; ++j) {
+		//		synth_pyramid[synth_levels - 1].at<Vec2f>(i, j) = Vec2f(
+		//			util::random<float>(2, example_pyramid[synth_levels - 1].rows - 3),
+		//			util::random<float>(2, example_pyramid[synth_levels - 1].cols - 3)
+		//		);
+		//	}
+		//}
 
 
 		// iteration
@@ -641,8 +735,17 @@ namespace scott {
 				0.4
 			);
 
+			// flow stuff...
+			//Mat reconstructed;
+			//reconstructed.create(synth_pyramid[level].size(), example.type());
+			//remap(example_pyramid[level], reconstructed, synth_pyramid[level], Mat(), INTER_LINEAR);
+			//reconstructed += heightoffset_pyramid[level];
+			Mat elevation = priorityFloodFill(example_pyramid[level]);
+			Mat direction = d8FlowDirection(elevation);
+			Mat accumulation = d8FlowAccumulation(direction);
+
 			// TODO move enventually
-			Mat app_space = appearance_space<4>(example_pyramid[level]);
+			Mat app_space = appearanceSpace<5>(example_pyramid[level], accumulation);
 			Mat coherence = k2_patchmatch(app_space, app_space, 5, 4);
 
 			
@@ -733,17 +836,41 @@ namespace scott {
 		//// Appearance-space
 		//Mat data(testImage.size(), CV_32FC1);
 		//testImage.convertTo(data, CV_32FC1);
+		//Mat elevation = priorityFloodFill(testImage);
+		//Mat direction = d8FlowDirection(elevation);
+		//Mat accumulation = d8FlowAccumulation(direction);
 
-		//Mat reduced = appearance_space<4>(data);
 
-		//Mat ind[4];
+		//Mat reduced = appearanceSpace<5>(data, accumulation);
+
+		//Mat ind[5];
 		//split(reduced, ind);
 
 		//imwrite(util::stringf("output/appearance_0.png"), heightmapToImage(ind[0]));
 		//imwrite(util::stringf("output/appearance_1.png"), heightmapToImage(ind[1]));
 		//imwrite(util::stringf("output/appearance_2.png"), heightmapToImage(ind[2]));
 		//imwrite(util::stringf("output/appearance_3.png"), heightmapToImage(ind[3]));
-		////cin.get();
+		//imwrite(util::stringf("output/appearance_4.png"), heightmapToImage(ind[4]));
+		//cin.get();
 
+
+
+
+
+
+		//Mat gaussian1d = getGaussianKernel(5, 1);
+		//Mat gaussian2d = gaussian1d * gaussian1d.t();
+
+		//cout << gaussian2d << endl;
+
+		//// hardcoded normalized 5x5 gaussian kernal
+		//const float guassian_kernal[5][5] = {
+		//	{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 },
+		//{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
+		//{ 0.0219382,  0.0983203, 0.16210312, 0.0983203, 0.0219382 },
+		//{ 0.0133062,  0.0596343, 0.0983203,  0.0596343, 0.0133062 },
+		//{ 0.00296902, 0.0133062, 0.0219382,  0.0133062, 0.00296902 }
+		//};
+		//cin.get();
 	}
 }

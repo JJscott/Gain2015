@@ -53,8 +53,8 @@ int main( int argc, char** argv ) {
 	Mat test_img(source_img.rows, source_img.cols, CV_32F);
 	source_img.convertTo(test_img, CV_32F);
 	
-	//gain::test(test_img);
-	scott::test(test_img);
+	gain::test(test_img);
+	//scott::test(test_img);
 	
 
 
