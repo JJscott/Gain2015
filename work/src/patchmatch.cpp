@@ -16,6 +16,29 @@ using namespace std;
 
 namespace {
 
+	void improve_nnf(Mat target, Point p, Mat source, Vec2f q, Mat nnf, Mat cost, int patch_size) {
+		int hp1 = patch_size / 2;
+		int hp2 = patch_size - hp1;
+
+		// get patches
+		auto patch_p = target(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
+		Mat patch_q(patch_size, patch_size, source.type());
+		Mat map1(patch_size, patch_size, CV_32FC2);
+		for (int i = 0; i < patch_size; i++)
+			for (int j = 0; j < patch_size; j++)
+				map1.at<Vec2f>(Point(j, i)) = q + Vec2f(j - hp1, i - hp1);
+		remap(source, patch_q, map1, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+
+		// cost (ssd)
+		float q_cost = norm(patch_p, patch_q);
+
+		if (q_cost < cost.at<float>(p)) {
+			nnf.at<Vec2f>(p) = q;
+			cost.at<float>(p) = q_cost;
+		}
+	}
+
+
 	void improve_k2_nnf(Point p, Vec2f q, float q_cost, Mat nnf, Mat cost, float min_dis) {
 		if (q_cost < cost.at<Vec2f>(p)[0]) { // better than the first result
 			Vec<Vec2f, 2> temp = nnf.at<Vec<Vec2f, 2>>(p);
@@ -62,6 +85,97 @@ namespace {
 		return Vec2f(clamp<float>(p[0], rect.x, rect.x + rect.width - 1), clamp<float>(p[1], rect.y, rect.y + rect.height - 1));
 	}
 }
+
+
+
+// returns a matrix of Points representing the best absolute position
+Mat patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat est) {
+	assert(source.type() == target.type());
+
+	int hp = patch_size / 2;
+
+	// Initalize
+	//
+	// nnf and cost matrices
+	RNG rng(9001); // opencv rng
+	Mat cost(target.rows, target.cols, CV_32FC1, numeric_limits<float>::infinity()); // 2-channel float
+	Mat nnf(target.rows, target.cols, CV_32FC2); // 2-channel float matrix
+	if (est.size() == nnf.size() && est.type() == nnf.type()) nnf = est.clone();
+	else {
+		for (int i = 0; i < nnf.rows; i++) {
+			auto row = nnf.ptr<Vec2f>(i);
+			for (int j = 0; j < nnf.cols; j++) {
+				row[j] = Vec2f(rng.uniform(hp, source.cols - hp - 1), rng.uniform(hp, source.rows - hp - 1));
+			}
+		}
+	}
+
+	// edge buffered images (for improve_nnf only)
+	Mat target_buffer;
+	copyMakeBorder(target, target_buffer, patch_size, patch_size, patch_size, patch_size, BORDER_REPLICATE);
+
+	// for contains operations
+	Rect source_rect(Point(hp, hp), source.size() - Size2i(patch_size, patch_size));
+	Rect target_rect(Point(), target.size());
+
+
+	// calculate the correct cost for nnf init
+	for (int i = 0; i < nnf.rows; i++) {
+		for (int j = 0; j < nnf.cols; j++) {
+			improve_nnf(target_buffer, Point(j, i), source, nnf.at<Vec2f>(Point(j, i)), nnf, cost, patch_size);
+		}
+	}
+
+
+	// Iteration
+	//
+	for (int iter = 0; iter < iterations; iter++) {
+		cout << iter << endl;
+
+		cout << "prop" << endl;
+		// Propagation
+		//
+		for (int i = 0; i < nnf.rows; i++) {
+			for (int j = 0; j < nnf.cols; j++) {
+				int s = (iter % 2 == 0) ? 1 : -1;
+				Point p = (iter % 2 == 0) ? Point(j, i) : Point(nnf.cols - j - 1, nnf.rows - i - 1);
+				Point q1 = p - Point(0, s); // neighbour 1
+				Point q2 = p - Point(s, 0); // neighbour 2
+
+				if (target_rect.contains(q1)) {
+					Vec2f cand = nnf.at<Vec2f>(q1) + Vec2f(0, s);
+					improve_nnf(target_buffer, p, source, clampToRect(cand, source_rect), nnf, cost, patch_size);
+				}
+				if (target_rect.contains(q2)) {
+					Vec2f cand = nnf.at<Vec2f>(q2) + Vec2f(s, 0);
+					improve_nnf(target_buffer, p, source, clampToRect(cand, source_rect), nnf, cost, patch_size);
+				}
+			}
+		}
+
+		cout << "rand" << endl;
+		// Random Search
+		//
+		for (int i = 0; i < nnf.rows; i++) {
+			for (int j = 0; j < nnf.cols; j++) {
+				Point p(j, i);
+
+				// ever decreasing window for random search
+				for (float t = max(source.rows, source.cols); t >= 1; t /= 2) {
+
+					// random Point centered around current best Point
+					Vec2f r = nnf.at<Vec2f>(p) + Vec2f(rng.uniform(-t, t), rng.uniform(-t, t));
+					improve_nnf(target_buffer, p, source, clampToRect(r, source_rect), nnf, cost, patch_size);
+				}
+			}
+		}
+
+	} // end iter
+
+
+	return nnf;
+}
+
 
 
 // returns a matrix of Points representing the best absolute position
@@ -164,39 +278,49 @@ Mat k2_patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::
 // TODO
 Mat reconstruct(Mat source, Mat nnf, int patch_size) {
 
-	//// create output buffers
-	//Mat output_buffer(nnf.size() + Size2i(patch_size * 2, patch_size * 2), CV_32FC3, Scalar(0, 0, 0));
-	//Mat output_count(output_buffer.size(), CV_32FC3, Scalar(0, 0, 0));
+	// create output buffers
+	Mat output_buffer(nnf.size() + Size2i(patch_size * 2, patch_size * 2), source.type(), Scalar(0, 0, 0));
+	Mat output_count(output_buffer.size(), source.type(), Scalar(0, 0, 0));
 
-	//// convert source to same type
-	//Mat source_buffer(source.size(), CV_32FC3);
-	//source.convertTo(source_buffer, CV_32FC3);
-	//copyMakeBorder(source_buffer, source_buffer, patch_size, patch_size, patch_size, patch_size, BORDER_CONSTANT);
+	// convert source to same type
+	Mat source_buffer(source.size(), source.type());
+	source.convertTo(source_buffer, source.type());
+	copyMakeBorder(source_buffer, source_buffer, patch_size, patch_size, patch_size, patch_size, BORDER_CONSTANT);
 
-	//// calculate patch sizes
-	//int hp1 = patch_size / 2;
-	//int hp2 = patch_size - hp1;
+	// calculate patch sizes
+	int hp1 = patch_size / 2;
+	int hp2 = patch_size - hp1;
 
-	//for (int i = 0; i < nnf.rows; i++) {
-	//	for (int j = 0; j < nnf.cols; j++) {
-	//		Point p(j, i);
-	//		Point q = nnf.at<Point>(i, j);
+	Mat temp_patch(patch_size, patch_size, source.type());
+	Mat temp_patch_coords(patch_size, patch_size, CV_32FC2);
 
-	//		auto patch_p = output_buffer(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
-	//		auto patch_q = source_buffer(Range(q.y - hp1, q.y + hp2) + patch_size, Range(q.x - hp1, q.x + hp2) + patch_size);
-	//		auto patch_count = output_count(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
+	for (int i = 0; i < nnf.rows; i++) {
+		for (int j = 0; j < nnf.cols; j++) {
+			Point p(j, i);
+			Vec2f q = nnf.at<Vec2f>(p);
 
-	//		patch_p += patch_q;
-	//		//patch_count += 1;
-	//		add(patch_count, Scalar(1, 1, 1), patch_count);
-	//	}
-	//}
+			// get patches using the nnf
+			for (int y = 0; y < patch_size; y++)
+				for (int x = 0; x < patch_size; x++)
+					temp_patch_coords.at<Vec2f>(y, x) = q + Vec2f(x - hp1, y - hp1);
 
-	////output_buffer /= output_count;
-	//divide(output_buffer, output_count, output_buffer);
+			remap(source, temp_patch, temp_patch_coords, Mat(), INTER_LINEAR, BORDER_REPLICATE);
+
+			// get a section of the output
+			auto patch_p = output_buffer(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
+			auto patch_count = output_count(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
+
+			// add to the output
+			patch_p += temp_patch;
+			add(patch_count, Scalar(1, 1, 1), patch_count);
+		}
+	}
+
+	//output_buffer /= output_count;
+	divide(output_buffer, output_count, output_buffer);
 
 	Mat output(nnf.size(), source.type());
-	//output_buffer(Range(patch_size, output.rows + patch_size), Range(patch_size, output.cols + patch_size)).convertTo(output, source.type());
+	output_buffer(Range(patch_size, output.rows + patch_size), Range(patch_size, output.cols + patch_size)).convertTo(output, source.type());
 
 	return output;
 }

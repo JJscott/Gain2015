@@ -28,16 +28,16 @@ namespace {
 namespace gain {
 
 	terrain terrainReadImage(const std::string &filename, double minVal, double maxVal, double spacing) {
-	//	cgra::image<float, 1> img(filename);
-	//	cgra::arr<T> t(img);
+		Mat img = imread(filename, CV_LOAD_IMAGE_GRAYSCALE);
 
-	//	T min_v = t.min();
-	//	T max_v = t.max();
+		double vmin, vmax;
+		minMaxIdx(img, &vmin, &vmax);
+		double s = (maxVal - minVal) / (vmax - vmin);
 
-	//	cgra::arr<T> final_terrain = ((maxVal - minVal)*(t - min_v) / max_v) + minVal;
+		Mat basic_terrain;
+		img.convertTo(basic_terrain, CV_32FC1, s, minVal-(s*vmin));
 
-	//	return terrain<T>(final_terrain, spacing);
-		return terrain();
+		return terrain(basic_terrain, spacing);
 	}
 
 

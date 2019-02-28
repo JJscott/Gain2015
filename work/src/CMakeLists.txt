@@ -19,6 +19,9 @@ SET(sources
 
 	"scott.hpp"
 	"scott.cpp"
+
+	"terrainopt.hpp"
+	"terrainopt.cpp"
 	
 	"main.cpp"
 	"CMakeLists.txt"
