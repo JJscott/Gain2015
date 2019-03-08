@@ -11,8 +11,8 @@
 // project
 #include "patchmatch.hpp"
 #include "gain.hpp"
-#include "scott.hpp"
 #include "terrainopt.hpp"
+#include "terrain.hpp"
 #include "opencv_util.hpp"
 
 
@@ -24,96 +24,79 @@ using namespace std;
 
 
 
+void testApprearanceSpace() {
+
+	//gain::terrain test_terrain = gain::terrainReadImage("work/res/mount_jackson.png", 0, 255, 1);
+
+	//// Appearance-space
+	//Mat reduced = gain::appearanceSpace<4>(test_terrain.heightmap);
+
+	//Mat ind[4];
+	//split(reduced, ind);
+
+	//imwrite(util::stringf("output/appearance_0.png"), gain::heightmapToImage(ind[0]));
+	//imwrite(util::stringf("output/appearance_1.png"), gain::heightmapToImage(ind[1]));
+	//imwrite(util::stringf("output/appearance_2.png"), gain::heightmapToImage(ind[2]));
+	//imwrite(util::stringf("output/appearance_3.png"), gain::heightmapToImage(ind[3]));
+}
+
+
+
+
+
+void testK2Patchmatch() {
+	gain::terrain test_terrain = gain::terrainReadImage("work/res/mount_jackson.png", 0, 255, 1);
+	//// K=2 Patchmatch
+	//Mat nnf = k2Patchmatch(testimage, testimage, 5, 4);
+
+	//// convert offset coordinates to color image
+	//Mat nnf_img_k1(nnf.rows, nnf.cols, CV_8UC3, Scalar(0, 0, 0));
+	//Mat nnf_img_k2(nnf.rows, nnf.cols, CV_8UC3, Scalar(0, 0, 0));
+	//for (int r = 0; r < nnf.rows; r++) {
+	//	auto in_row = nnf.ptr<Vec<Vec2f, 2>>(r);
+	//	auto out_row_k1 = nnf_img_k1.ptr<Vec3b>(r);
+	//	auto out_row_k2 = nnf_img_k2.ptr<Vec3b>(r);
+	//	for (int c = 0; c < nnf.cols; c++) {
+	//		out_row_k1[c][2] = int((255.0 * in_row[c][0][0]) / testimage.cols); // cols -> r
+	//		out_row_k1[c][1] = int((255.0 * in_row[c][0][1]) / testimage.rows); // rows -> g
+
+	//		out_row_k2[c][2] = int((255.0 * in_row[c][1][0]) / testimage.cols); // cols -> r
+	//		out_row_k2[c][1] = int((255.0 * in_row[c][1][1]) / testimage.rows); // rows -> g
+	//	}
+	//}
+
+	//imwrite("output/NNF_k1.png", nnf_img_k1);
+	//imwrite("output/NNF_k2.png", nnf_img_k2);
+}
+
+
+
+
+void testSynthesis() {
+
+	// input terrain
+	gain::terrain test_terrain = gain::terrainReadImage("work/res/mount_jackson.png", 0, 255, 1);
+	
+	// parameters
+	gain::synthesis_params params;
+	params.randomInit = true;
+
+	Mat synth = gain::synthesizeTerrain(test_terrain.heightmap, params);
+	//Mat synth = synthesizeTerrain(test_terrain.heightmap, Size(512, 512), 5, 7);
+	imwrite("output/syth.png", gain::heightmapToImage(synth));
+}
+
+
+
+
+
+
 // main program
 // 
 int main( int argc, char** argv ) {
 
-	// parameters
-	const int patch_size = 7;
-	const int patchmatch_iter = 4;
+	//testApprearanceSpace();
+	//testK2Patchmatch();
+	testSynthesis();
 
-
-	// check we have exactly one additional argument
-	// eg. work/res/mount_jackson.png
-	if( argc != 2) {
-		cout << "Usage: cgra352 sourceImage" << endl;
-		abort();
-	}
-
-	// read the file
-	Mat source_img;
-	source_img = imread(argv[1], CV_LOAD_IMAGE_GRAYSCALE);
-
-	// check for invalid input
-	if(!source_img.data) {
-		cout << "Could not open or find image for sourceImage argument" << std::endl;
-		abort();
-	}
-
-	
-	Mat test_img(source_img.rows, source_img.cols, CV_32F);
-	source_img.convertTo(test_img, CV_32F);
-	
-	//gain::test(test_img);
-	//scott::test(test_img);
-	scott2::test(test_img);
-	
-
-
-
-	//auto sampleVec2f = [](cv::Mat m, cv::Vec2f p) -> Vec3b {
-	//	using namespace cv;
-	//	using namespace std;
-	//	p += Vec2f(.5);
-	//	Vec3b r(0, 0, 0);
-	//	for (int j = 0; j < 2; j++) {
-	//		for (int i = 0; i < 2; i++) {
-	//			Point p1(floor(j + p[0] - 0.5f), floor(i + p[1] - 0.5f));
-	//			Vec2f d(1.f - abs(p1.x + 0.5f - p[0]), 1.f - abs(p1.y + 0.5f - p[1]));
-	//			Point cp = clampToMat(p1, m);
-	//			r += m.at<Vec3b>(cp) * d[0] * d[1];
-	//		}
-	//	}
-	//	return r;
-	//};
-
-
-
-	//Mat m(100, 100, CV_8UC3, Vec3b(0, 0, 0));
-	//Mat c(100, 100, CV_32FC2);
-	//Mat f1(100, 100, CV_8UC3);
-	//Mat f2(100, 100, CV_8UC3);
-
-
-	//for (int i = 0; i < 100; i++) {
-	//	for (int j = 0; j < 50; j++) {
-	//		m.at<Vec3b>(Point(j, i)) = Vec3b(255, 255, 255);
-	//	}
-	//}
-
-	//for (int i = 0; i < 100; i++) {
-	//	for (int j = 0; j < 100; j++) {
-	//		c.at<Vec2f>(Point(j, i)) = Vec2f(j/100.0 + 49, i);
-	//		f2.at<Vec3b>(Point(j, i)) = sampleVec2f(m, Vec2f(j / 100.0 + 49, i));
-	//	}
-	//}
-
-	//remap(m, f1, c, Mat(), INTER_LINEAR, BORDER_REPLICATE);
-
-	//for (int j = 0; j < 100; j++) {
-	//	cout << norm(f1.at<Vec3b>(0, j), f2.at<Vec3b>(0, j)) << " : " << f1.at<Vec3b>(0, j) << " : " << f2.at<Vec3b>(0, j) << endl;
-	//}
-
-
-
-	//namedWindow("m");
-	//imshow("m", m);
-
-	//namedWindow("f1");
-	//imshow("f1", f1);
-
-	//namedWindow("f2");
-	//imshow("f2", f2);
-
-	//waitKey(0);
 }

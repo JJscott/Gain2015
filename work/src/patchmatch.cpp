@@ -179,7 +179,7 @@ Mat patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat
 
 
 // returns a matrix of Points representing the best absolute position
-Mat k2_patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat est) {
+Mat k2Patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat est) {
 	assert(source.type() == target.type());
 
 	int hp = patch_size / 2;

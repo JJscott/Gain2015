@@ -746,7 +746,7 @@ namespace scott {
 
 			// TODO move enventually
 			Mat app_space = appearanceSpace<5>(example_pyramid[level], accumulation);
-			Mat coherence = k2_patchmatch(app_space, app_space, 5, 4);
+			Mat coherence = k2Patchmatch(app_space, app_space, 5, 4);
 
 			
 			// SCOTT ADDITION TO ALGORITHM
