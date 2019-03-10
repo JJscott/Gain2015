@@ -46,7 +46,7 @@ namespace {
 
 
 	template<int AppComponents>
-	Mat appearanceSpace(Mat data, gain::synthesis_params params) {
+	Mat appearanceSpace(Mat data, const gain::synthesis_params &params) {
 		assert(data.type() == CV_32FC1);
 
 		Mat gaussian1d;
@@ -96,8 +96,30 @@ namespace {
 
 
 
+	float constriantCurve(float x, float d, const gain::synthesis_params &params) {
+		float td = params.constraintScale * d;
+		float bd = -params.constraintSlope / (3 * pow(d, 2));
+		float omega;
+		if (abs(x) > td) {
+			float cd = bd * pow(td, 3) + params.constraintSlope * td;
+			if (x < -td) {
+				omega = params.constraintSlope * x + cd;
+			}
+			else {
+				omega = params.constraintSlope * x - cd;
+			}
+		}
+		else {
+			omega = -bd * pow(x, 3);
+		}
+		return omega;
+	}
 
-	void correction(Mat example, Mat appSpace, Mat coherence, Mat synth, Mat heightoffset) {
+
+
+
+
+	void correction(Mat example, Mat appSpace, Mat coherence, Mat synth, Mat heightoffset, const gain::synthesis_params &params) {
 		assert(synth.type() == CV_32FC2);
 		assert(heightoffset.type() == CV_32FC1);
 		assert(example.size() == appSpace.size());
@@ -146,7 +168,7 @@ namespace {
 			for (int j = 0; j < synth.cols; j += 2) {
 				for (int i = 0; i < synth.rows; i += 2) {
 
-					// 1) Get the Pixel p and Neighbourhood np
+					// 1) Get the Pixel p, Neighbourhood np, and Height hp
 					//
 					Point p = Point(j, i) + subpassDelta[subpass];
 					if (p.y >= synth.rows || p.x >= synth.cols) continue; // bound check
@@ -178,6 +200,13 @@ namespace {
 					// average appearance space combine with height offset 
 					np_temp_app += np_temp_ho_multi;
 					reduce(np_temp_app, np, 0, CV_REDUCE_AVG);
+
+					// height
+					float hp = 0;
+					for (int n = 0; n < 4; ++n) {
+						hp += np.at<Vec4f>(0, n)[0];
+					}
+					hp /= 4;
 
 
 
@@ -218,11 +247,12 @@ namespace {
 
 							// calculate a height offset that minimizes the SSD between np and nq
 							// accumulate an average height difference between the neighbourhoods
-							float h = 0;
+							float hq = 0;
 							for (int n = 0; n < 4; ++n) {
-								h += (np.at<Vec4f>(0, n)[0] - nq.at<Vec4f>(0, n)[0]);
+								hq += nq.at<Vec4f>(0, n)[0];
 							}
-							h /= 4;
+							hq /= 4;
+							float h = hp - hq;
 							//h = 0; // uncomment for no height offset in the correction
 
 							// set the height offset in the Matrix
@@ -243,8 +273,22 @@ namespace {
 
 
 
-					// 3) Make the correction
+					// 3) Adjust height-offset with constraints
 					// 
+
+					//float target_h;
+					//float target_h;
+
+
+					//for (auto c : params.constraints) {
+
+					//}
+
+
+
+
+					// 4) Set the value
+					//
 					synth.at<Vec2f>(p) = best_q;
 					heightoffset.at<float>(p) = best_h;
 				}
@@ -369,7 +413,7 @@ namespace gain {
 			//
 			if (level < params.exampleLevels) {
 				for (int i = 0; i < params.correctionIter; ++i) {
-					correction(example_pyramid[level], app_space, coherence, synth_pyramid[level], heightoffset_pyramid[level]);
+					correction(example_pyramid[level], app_space, coherence, synth_pyramid[level], heightoffset_pyramid[level], params);
 				}
 			}
 

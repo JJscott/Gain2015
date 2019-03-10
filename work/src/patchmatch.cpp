@@ -16,14 +16,15 @@ using namespace std;
 
 namespace {
 
+	static Mat patch_q;
+	static Mat map1;
+
 	void improve_nnf(Mat target, Point p, Mat source, Vec2f q, Mat nnf, Mat cost, int patch_size) {
 		int hp1 = patch_size / 2;
 		int hp2 = patch_size - hp1;
 
 		// get patches
 		auto patch_p = target(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
-		Mat patch_q(patch_size, patch_size, source.type());
-		Mat map1(patch_size, patch_size, CV_32FC2);
 		for (int i = 0; i < patch_size; i++)
 			for (int j = 0; j < patch_size; j++)
 				map1.at<Vec2f>(Point(j, i)) = q + Vec2f(j - hp1, i - hp1);
@@ -66,8 +67,6 @@ namespace {
 		
 		// get patches
 		auto patch_p = target(Range(p.y - hp1, p.y + hp2) + patch_size, Range(p.x - hp1, p.x + hp2) + patch_size);
-		Mat patch_q(patch_size, patch_size, source.type());
-		Mat map1(patch_size, patch_size, CV_32FC2);
 		for (int i = 0; i < patch_size; i++)
 			for (int j = 0; j < patch_size; j++)
 				map1.at<Vec2f>(Point(j, i)) = q + Vec2f(j - hp1, i - hp1);
@@ -92,7 +91,12 @@ namespace {
 Mat patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat est) {
 	assert(source.type() == target.type());
 
+
+	// temp variables
 	int hp = patch_size / 2;
+	patch_q = Mat(patch_size, patch_size, source.type());
+	map1 = Mat(patch_size, patch_size, CV_32FC2);
+
 
 	// Initalize
 	//
@@ -182,8 +186,11 @@ Mat patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat
 Mat k2Patchmatch(Mat source, Mat target, int patch_size, float iterations, cv::Mat est) {
 	assert(source.type() == target.type());
 
+	// temp variables
 	int hp = patch_size / 2;
 	float min_dis = norm(Vec2f(source.cols, source.rows)) * 0.05;
+	patch_q = Mat(patch_size, patch_size, source.type());
+	map1 = Mat(patch_size, patch_size, CV_32FC2);
 
 	// Initalize
 	//
@@ -324,6 +331,8 @@ Mat reconstruct(Mat source, Mat nnf, int patch_size) {
 
 	return output;
 }
+
+
 
 //TODO
 // convert offset coordinates to color image

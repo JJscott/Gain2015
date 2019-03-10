@@ -5,6 +5,21 @@
 
 namespace gain {
 
+
+
+	struct point_constraint {
+		cv::Vec2f position;
+		float height;
+		float radius;
+		cv::Vec2f gradient{0, 0};
+
+		// helper method
+		float calcHeight(cv::Vec2f pos) {
+			return height + (pos - position).dot(gradient);
+		}
+	};
+
+
 	struct synthesis_params {
 		cv::Size synthesisSize{ 512, 512 };
 		int synthesisLevels = 7; // M | (M > L)
@@ -13,13 +28,18 @@ namespace gain {
 		float jitter = 0.4;
 
 		// constraints
+		float constraintScale = 0.5; // distance scale for t(d) = sd
+		float constraintSlope = 0.5; // slope at x = +-t(d)
+		std::vector<point_constraint> constraints;
 		
 
 		// experimental parameters
 		bool randomInit = false; // initialize the start of Gain with random coordinates
 		bool scaleAppSpace = false; // scale the non-mean values of the apperance space appropriately
 		enum {
-			ENFORCE_FLOW_NONE
+			ENFORCE_FLOW_NONE,
+			ENFORCE_FLOW_HEIGHTOFFSET,
+			ENFORCE_FLOW_CONSTRAINT
 		};
 		int flowAlgorithm = ENFORCE_FLOW_NONE;
 	};
