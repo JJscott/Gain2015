@@ -118,15 +118,22 @@ namespace {
 
 
 
-
-	void correction(Mat example, Mat appSpace, Mat coherence, Mat synth, Mat heightoffset, const gain::synthesis_params &params) {
-		assert(synth.type() == CV_32FC2);
-		assert(heightoffset.type() == CV_32FC1);
-		assert(example.size() == appSpace.size());
-		assert(synth.size() == heightoffset.size());
-		
+	void correction(Mat example, Mat appSpace, Mat coherence, Mat synth, Mat heightoffset, Mat constraints, Mat cHeight, Mat cDistance, const gain::synthesis_params &params) {
+		assert(example.type() == CV_32FC1);
 		assert(appSpace.type() == CV_32FC4); // 4-channel appearance space means Vec4f
 		assert(coherence.type() == CV_32FC4); // k=2 cohearance means Vec<Vec2f, 2>
+		assert(synth.type() == CV_32FC2);
+		assert(heightoffset.type() == CV_32FC1);
+		assert(constraints.type() == CV_8UC1);
+		assert(cHeight.type() == CV_32FC1);
+		assert(cDistance.type() == CV_32FC1);
+
+		assert(example.size() == appSpace.size());
+		assert(synth.size() == heightoffset.size());
+		assert(synth.size() == constraints.size());
+		assert(synth.size() == cHeight.size());
+		assert(synth.size() == cDistance.size());
+		
 
 		// delta set for diagonal neighbours
 		const Point diagonalDelta[]{ {-1, -1}, { 1, -1}, {-1, 1}, {1, 1} };
@@ -160,7 +167,10 @@ namespace {
 		Mat nq(1, 4, appSpace.type());
 		Mat nq_temp_synth_coords(1, 4, CV_32FC2);
 
+
+		// Correction iteration
 		// 4 subpasses
+		//
 		const Point subpassDelta[]{ { 0,0 }, { 1,0 },{ 0,1 }, { 1,1 } };
 		for (int subpass = 0; subpass < 4; ++subpass) {
 
@@ -201,16 +211,45 @@ namespace {
 					np_temp_app += np_temp_ho_multi;
 					reduce(np_temp_app, np, 0, CV_REDUCE_AVG);
 
-					// height
-					float hp = 0;
+
+					// 2) Constraints
+					//
+					float hp = 0; // average neighbourhood height
 					for (int n = 0; n < 4; ++n) {
+
+						//TODO just using the center of the nighbourhood for working out the correct constraints
+						// maybe it should be done for all diag neighbours
+						// maybe it should be donw for the adjenct neighbours to diag neighbuors as well
+						// seriously... who the fuck knows...
+						if (constraints.at<bool>(p)) {
+							float hc = np.at<Vec4f>(0, n)[0];
+							float ht = cHeight.at<float>(p);
+							float x = ht - hc;
+							float d = cDistance.at<float>(i, j);
+							float sd = params.constraintScale * d;
+
+							float theta;
+							if (x < -sd) {
+								theta = params.constraintSlope * x + (2 * params.constraintSlope * sd) / 3;
+							}
+							else if (x > sd) {
+								theta = params.constraintSlope * x - (2 * params.constraintSlope * sd) / 3;
+							}
+							else {
+								theta = (params.constraintSlope * pow(x, 3)) / (3 * pow(params.constraintScale, 2), pow(d, 2));
+							}
+
+							float newHeight = hc + theta;
+							np.at<Vec4f>(0, n)[0] = newHeight;
+						}
 						hp += np.at<Vec4f>(0, n)[0];
 					}
 					hp /= 4;
+					
 
 
 
-					// 2) Find the best matching Pixel/Neighbourhood
+					// 3) Find the best matching Pixel/Neighbourhood
 					//
 
 					// collect candidates of neighbours
@@ -251,8 +290,8 @@ namespace {
 							for (int n = 0; n < 4; ++n) {
 								hq += nq.at<Vec4f>(0, n)[0];
 							}
-							hq /= 4;
-							float h = hp - hq;
+							hq /= 4; // calculate the average height of the candidate neighbourhood
+							float h = hp - hq; // what we add to the candidate to bring it up to the Neighbourhood np
 							//h = 0; // uncomment for no height offset in the correction
 
 							// set the height offset in the Matrix
@@ -271,22 +310,6 @@ namespace {
 						}
 					}
 
-
-
-					// 3) Adjust height-offset with constraints
-					// 
-
-					//float target_h;
-					//float target_h;
-
-
-					//for (auto c : params.constraints) {
-
-					//}
-
-
-
-
 					// 4) Set the value
 					//
 					synth.at<Vec2f>(p) = best_q;
@@ -297,6 +320,16 @@ namespace {
 
 		} // subpasses
 
+	}
+
+
+
+
+	Mat reconstruct(Mat example, Mat synth, Mat heightoffset) {
+		Mat reconstructed;
+		remap(example, reconstructed, synth, Mat(), INTER_LINEAR);
+		reconstructed += heightoffset;
+		return reconstructed;
 	}
 
 
@@ -350,8 +383,76 @@ namespace {
 
 namespace gain {
 
+
+	constraint_value point_constraint::calculateValue(cv::Vec2f pos, float maxRadius) {
+		constraint_value v;
+		v.distance = norm(pos - position);
+		v.height = height + (pos - position).dot(gradient);
+		v.valid = v.distance <= min(radius, maxRadius);
+		return v;
+	}
+
+	constraint_value curve_constraint::calculateValue(cv::Vec2f pos, float maxRadius) {
+		// first value
+		constraint_value v;
+		v.distance = norm(path[0] - pos);
+		v.height = curveNodes[0].height;
+		float side = (pos[0] - path[0][0]) * (path[1][1] - path[0][1]) - (pos[1] - path[0][1]) * (path[1][0] - path[0][0]);
+		v.height += v.distance * (side > 0) ? curveNodes[0].leftGradient : curveNodes[0].rightGradient;
+
+		// for every edge between the nodes
+		int headNode = 0;
+		for (int i = 1; i < path.size(); i++) {
+
+			// move to the next "segment"
+			if (headNode + 2 < curveNodes.size() && i == curveNodes[headNode + 1].index) {
+				headNode++;
+			}
+
+			// get points along the segment
+			Vec2f p1 = path[i - 1];
+			Vec2f p2 = path[i];
+			float d = norm(p2 - pos); // distance to constraint
+			float t = (i - curveNodes[headNode].index) / float(curveNodes[headNode + 1].index - curveNodes[headNode].index); // [0, 1] between the two curve nodes
+
+			if (d < v.distance) {
+				v.distance = d;
+				float h1 = curveNodes[headNode].height;
+				float h2 = curveNodes[headNode + 1].height;
+				v.height = ((1 - t) * h1 + t * h2);
+
+				// calculate the side (+/-)
+				// if p1 is north, p2 is south, then right (east) is positive, and left is negative
+				side = (pos[0] - p1[0]) * (p2[1] - p1[1]) - (pos[1] - p1[1]) * (p2[0] - p1[0]);
+
+				float g1, g2, r1, r2;
+				if (side > 0) { // right
+					g1 = curveNodes[headNode].rightGradient;
+					g2 = curveNodes[headNode + 1].rightGradient;
+					r1 = curveNodes[headNode].rightRadius;
+					r2 = curveNodes[headNode + 1].rightRadius;
+				}
+				else { // left
+					g1 = curveNodes[headNode].leftGradient;
+					g2 = curveNodes[headNode + 1].leftGradient;
+					r1 = curveNodes[headNode].leftRadius;
+					r2 = curveNodes[headNode + 1].leftRadius;
+				}
+				v.height += v.distance * ((1 - t) * g1 + t * g2);
+				v.valid = v.distance < ((1 - t) * r1 + t * r2);
+			}
+
+		}
+
+		// check if valid
+		v.valid = v.distance <= maxRadius;
+
+		return v;
+	}
+
+
 	Mat synthesizeTerrain(Mat example, synthesis_params params) {
-		assert(synth_levels > example_levels); // M > L
+		assert(params.synthesisLevels > params.exampleLevels); // M > L
 
 		// 1) Initialization
 		//
@@ -360,36 +461,111 @@ namespace gain {
 		util::reset_random();
 
 		// create exemplar pyramid
-		vector<Mat> example_pyramid(params.synthesisLevels);
-		buildPyramid(example, example_pyramid, params.synthesisLevels);
+		vector<Mat> examplePyramid(params.synthesisLevels);
+		buildPyramid(example, examplePyramid, params.synthesisLevels);
 
 		// create synthesis pyramid
 		Mat synth(params.synthesisSize.height, params.synthesisSize.width, CV_32FC2);
 		Mat heightoffset(params.synthesisSize.height, params.synthesisSize.width, CV_32FC1, Scalar(0));
-		vector<Mat> synth_pyramid(params.synthesisLevels);
-		vector<Mat> heightoffset_pyramid(params.synthesisLevels);
-		buildPyramid(synth, synth_pyramid, params.synthesisLevels);
-		buildPyramid(heightoffset, heightoffset_pyramid, params.synthesisLevels);
-
+		vector<Mat> synthPyramid(params.synthesisLevels);
+		vector<Mat> heightoffsetPyramid(params.synthesisLevels);
+		buildPyramid(synth, synthPyramid, params.synthesisLevels);
+		buildPyramid(heightoffset, heightoffsetPyramid, params.synthesisLevels);
 
 		// center initialization
-		synth_pyramid[params.synthesisLevels - 1].setTo(Scalar(
-			example_pyramid[params.synthesisLevels - 1].rows / 2.f,
-			example_pyramid[params.synthesisLevels - 1].cols / 2.f
+		synthPyramid[params.synthesisLevels - 1].setTo(Scalar(
+			examplePyramid[params.synthesisLevels - 1].rows / 2.f,
+			examplePyramid[params.synthesisLevels - 1].cols / 2.f
 		));
 
 		// random initialization
 		if (params.randomInit) {
-			for (int i = 0; i < synth_pyramid[params.synthesisLevels - 1].rows; ++i) {
-				for (int j = 0; j < synth_pyramid[params.synthesisLevels - 1].cols; ++j) {
-					synth_pyramid[params.synthesisLevels - 1].at<Vec2f>(i, j) = Vec2f(
-						util::random<float>(2, example_pyramid[params.synthesisLevels - 1].cols - 2),
-						util::random<float>(2, example_pyramid[params.synthesisLevels - 1].rows - 2)
+			for (int i = 0; i < synthPyramid[params.synthesisLevels - 1].rows; ++i) {
+				for (int j = 0; j < synthPyramid[params.synthesisLevels - 1].cols; ++j) {
+					synthPyramid[params.synthesisLevels - 1].at<Vec2f>(i, j) = Vec2f(
+						util::random<float>(2, examplePyramid[params.synthesisLevels - 1].cols - 2),
+						util::random<float>(2, examplePyramid[params.synthesisLevels - 1].rows - 2)
 					);
 				}
 			}
-			//randu(synth_pyramid[synth_levels - 1], Scalar(2, 2), Scalar(example_pyramid[synth_levels - 1].cols - 2, example_pyramid[synth_levels - 1].rows - 2));
+			//randu(synthPyramid[synth_levels - 1], Scalar(2, 2), Scalar(examplePyramid[synth_levels - 1].cols - 2, examplePyramid[synth_levels - 1].rows - 2));
 		}
+
+		// pre-calcuate parameters for constraints
+		Mat constraintMask(synth.rows, synth.cols, CV_8UC1, Scalar(0));
+		Mat constraintHeightMap(synth.rows, synth.cols, CV_32FC1, Scalar(0));
+		Mat constraintDistanceMap(synth.rows, synth.cols, CV_32FC1, Scalar(0));
+
+		// create constraint pyramid
+		vector<Mat> constraintMaskPyramid(params.exampleLevels);
+		vector<Mat> constraintHeightPyramid(params.exampleLevels);
+		vector<Mat> constraintDistancePyramid(params.exampleLevels);
+		buildPyramid(constraintMask, constraintMaskPyramid, params.exampleLevels);
+		buildPyramid(constraintHeightMap, constraintHeightPyramid, params.exampleLevels);
+		buildPyramid(constraintDistanceMap, constraintDistancePyramid, params.exampleLevels);
+
+		// only compute for all but the finer 2 levels of the synthesis
+		for (int level = params.exampleLevels - 1; level-- > 2;) {
+			constraintMask = constraintMaskPyramid[level];
+			constraintHeightMap = constraintHeightPyramid[level];
+			constraintDistanceMap = constraintDistancePyramid[level];
+
+			for (int j = 0; j < constraintMask.cols; j++) {
+				for (int i = 0; i < constraintMask.rows; i++) {
+					float maxRad = 4 * pow(2, level);
+					Vec2f p(j+0.5, i+0.5);
+					p *= pow(2, level); // convert to same coord system as constraints
+
+					// sum of constraint values
+					int count = 0;
+					float distance = 0;
+					float weightSum = 0;
+					float targetHeight = 0;
+
+					// aggregate constraints
+					vector<constraint_value> values;
+					for (point_constraint c : params.pointConstraints) {
+						values.push_back(c.calculateValue(p, maxRad));
+					}
+					for (curve_constraint c : params.curveConstraints) {
+						values.push_back(c.calculateValue(p, maxRad));
+					}
+
+					for (constraint_value value : values) {
+						if (!value.valid) continue;
+						float weight = 1 / value.distance;
+
+						// case where point is on a constraint
+						if (isinf(weight) || isnan(weight)) {
+							count = 1;
+							weightSum = 1;
+							targetHeight = value.height;
+							distance = value.distance;
+							break;
+						}
+
+						count++;
+						weightSum += weight;
+						targetHeight += weight * value.height;
+						distance += weight * value.distance;
+					}
+
+					if (count > 0) {
+						constraintMask.at<bool>(i, j) = true;
+						constraintHeightMap.at<float>(i, j) = targetHeight / weightSum;
+						constraintDistanceMap.at<float>(i, j) = distance / weightSum;
+					}
+				}
+			}
+
+			imwrite(util::stringf("output/constraintMask", level, ".png"), constraintMask);
+			imwrite(util::stringf("output/constraintHeightMap", level, ".png"), heightmapToImage(constraintHeightMap));
+			imwrite(util::stringf("output/constraintDistanceMap", level, ".png"), heightmapToImage(constraintDistanceMap));
+		}
+
+
+		//return Mat();
+
 
 		// iteration
 		for (int level = params.synthesisLevels - 1; level-- > 0;) {
@@ -397,15 +573,15 @@ namespace gain {
 			// 2) upsample / jitter
 			//
 			pyrUpJitter(
-				synth_pyramid[level + 1],
-				heightoffset_pyramid[level + 1],
-				synth_pyramid[level],
-				heightoffset_pyramid[level],
+				synthPyramid[level + 1],
+				heightoffsetPyramid[level + 1],
+				synthPyramid[level],
+				heightoffsetPyramid[level],
 				params.jitter
 			);
 
-			Mat app_space = appearanceSpace<4>(example_pyramid[level], params);
-			Mat coherence = k2Patchmatch(app_space, app_space, 5, 4);
+			Mat appSpace = appearanceSpace<4>(examplePyramid[level], params);
+			Mat coherence = k2Patchmatch(appSpace, appSpace, 5, 4);
 
 
 
@@ -413,18 +589,28 @@ namespace gain {
 			//
 			if (level < params.exampleLevels) {
 				for (int i = 0; i < params.correctionIter; ++i) {
-					correction(example_pyramid[level], app_space, coherence, synth_pyramid[level], heightoffset_pyramid[level], params);
+					correction(
+						examplePyramid[level],
+						appSpace,
+						coherence,
+						synthPyramid[level],
+						heightoffsetPyramid[level],
+						constraintMaskPyramid[level],
+						constraintHeightPyramid[level],
+						constraintDistancePyramid[level],
+						params
+					);
 				}
 			}
 
 
 			{ // DEBUG //
 				synthesizeDebug(
-					example_pyramid[level],
-					app_space,
+					examplePyramid[level],
+					appSpace,
 					coherence,
-					synth_pyramid[level],
-					heightoffset_pyramid[level],
+					synthPyramid[level],
+					heightoffsetPyramid[level],
 					util::stringf(level, "")
 				);
 			} // DEBUG //
@@ -434,8 +620,8 @@ namespace gain {
 		// reconstruct the synthesis
 		Mat reconstructed;
 		reconstructed.create(params.synthesisSize, example.type());
-		remap(example, reconstructed, synth_pyramid[0], Mat(), INTER_LINEAR);
-		reconstructed += heightoffset_pyramid[0];
+		remap(example, reconstructed, synthPyramid[0], Mat(), INTER_LINEAR);
+		reconstructed += heightoffsetPyramid[0];
 		return reconstructed;
 	}
 }

@@ -1,6 +1,7 @@
 
 // std
 #include <iostream>
+#include <fstream>
 #include <string>
 
 // project
@@ -167,6 +168,101 @@ namespace gain {
 	}
 
 
+	terrain terrainReadASC(const std::string &filename) {
+		using namespace std;
+
+		ifstream infile;
+		infile.open(filename);
+
+		// meta-data	
+		string str;
+		int rows, cols;
+		float cellHeight, cellSize, xllcorner, yllcorner,
+			noData = numeric_limits<float>::quiet_NaN();
+
+		// arguments
+		while (infile.good()) {
+			infile >> str;
+			try {
+				
+				cellHeight = stof(str);
+				// this must be the start of the data
+				break;
+			}
+			catch(invalid_argument  e){
+				// this must be an argument
+				if (str == "ncols") {
+					infile >> cols;
+				}
+				else if (str == "nrows") {
+					infile >> rows;
+				}
+				else if (str == "cellsize") {
+					infile >> cellSize;
+				}
+				else if (str == "xllcorner") {
+					infile >> xllcorner;
+				}
+				else if (str == "yllcorner") {
+					infile >> yllcorner;
+				}
+				else if (str == "NODATA_value") {
+					infile >> noData;
+				}
+				else {
+					cerr << "Invalid meta-data tag " << str << endl;
+					throw runtime_error("Invalid meta-data tag.");
+				}
+			}
+		}
+
+		Mat heightmap(rows, cols, CV_32FC1, Scalar(noData));
+
+		// data
+		heightmap.at<float>(0, 0) = ((cellHeight == noData) ? numeric_limits<float>::quiet_NaN() : cellHeight);
+		for (int j = 1; j < cols; j++) {
+			infile >> cellHeight;
+			heightmap.at<float>(0, j) = ((cellHeight == noData) ? numeric_limits<float>::quiet_NaN() : cellHeight);
+		}
+		for (int i = 1; i < rows; i++) {
+			for (int j = 0; j < cols; j++) {
+				infile >> cellHeight;
+				heightmap.at<float>(i, j) = (cellHeight == noData) ? numeric_limits<float>::quiet_NaN() : cellHeight;
+			}
+		}
+
+		return terrain(heightmap, cellSize);
+	}
+
+
+	// Esri grid format
+	// https://en.wikipedia.org/wiki/Esri_grid
+	// AKA ARC/INFO ASCII GRID
+	// *.asc
+	void terrainWriteASC(const std::string &filename, terrain ter) {
+		std::ofstream outfile;
+		outfile.open(filename);
+
+		// meta-data
+		outfile << "ncols        " << ter.heightmap.cols << endl;
+		outfile << "nrows        " << ter.heightmap.rows << endl;
+		outfile << "xllcorner    0.0" << endl;
+		outfile << "yllcorner    0.0" << endl;
+		outfile << "cellsize     " << ter.spacing << endl;
+
+		// data
+		for (int i = 0; i < ter.heightmap.rows; i++) {
+			outfile << ter.heightmap.at<float>(i, 0);
+			for (int j = 1; j < ter.heightmap.cols; j++) {
+				outfile << " " << ter.heightmap.at<float>(i, j);
+			}
+			outfile << endl;
+		}
+
+		outfile.close();
+	}
+
+
 	Mat heightmapToImage(Mat heightmap) {
 		double minVal, maxVal;
 		minMaxLoc(heightmap, &minVal, &maxVal);
@@ -180,4 +276,7 @@ namespace gain {
 		normalized.convertTo(img, CV_8U);
 		return img;
 	}
+
+
+
 }

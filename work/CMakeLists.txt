@@ -11,7 +11,7 @@ set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 include(CGRAFunctions)
 
 # Project Name
-set(CGRA_PROJECT "cgra352" CACHE STRING "CGRA Project Name")
+set(CGRA_PROJECT "gain2015" CACHE STRING "CGRA Project Name")
 
 # Project
 project("CGRA_PROJECT_${CGRA_PROJECT}" CXX C)

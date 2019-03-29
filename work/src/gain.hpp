@@ -1,11 +1,18 @@
 #pragma once
 
+// std
+#include <vector>
+
 // opencv
 #include <opencv2/core.hpp>
 
 namespace gain {
 
-
+	struct constraint_value {
+		bool valid;
+		float height;
+		float distance;
+	};
 
 	struct point_constraint {
 		cv::Vec2f position;
@@ -13,10 +20,23 @@ namespace gain {
 		float radius;
 		cv::Vec2f gradient{0, 0};
 
-		// helper method
-		float calcHeight(cv::Vec2f pos) {
-			return height + (pos - position).dot(gradient);
-		}
+		constraint_value calculateValue(cv::Vec2f pos, float maxRadius);
+	};
+
+	struct curve_node {
+		int index;
+		float height;
+		float leftGradient;
+		float rightGradient;
+		float leftRadius;
+		float rightRadius;
+	};
+
+	struct curve_constraint {
+		std::vector<cv::Vec2f> path;
+		std::vector<curve_node> curveNodes;
+		
+		constraint_value calculateValue(cv::Vec2f pos, float maxRadius);
 	};
 
 
@@ -29,8 +49,9 @@ namespace gain {
 
 		// constraints
 		float constraintScale = 0.5; // distance scale for t(d) = sd
-		float constraintSlope = 0.5; // slope at x = +-t(d)
-		std::vector<point_constraint> constraints;
+		float constraintSlope = 0.5; // slope at x >= abs(t(d))
+		std::vector<point_constraint> pointConstraints;
+		std::vector<curve_constraint> curveConstraints;
 		
 
 		// experimental parameters
