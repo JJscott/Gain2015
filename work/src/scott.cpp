@@ -2,6 +2,7 @@
 // std
 #include <iostream>
 #include <vector>
+#include <functional>
 #include <queue>
 
 // opencv
@@ -318,7 +319,7 @@ namespace scott {
 		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
 
 		// compute PCA and transform to reduced eigen space
-		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, AppComponents - 1);
+		PCA pca(pcaset, Mat(), CV_PCA_DATA_AS_ROW, AppComponents - 1);
 		Mat reduced = pcaset * pca.eigenvectors.t();
 
 

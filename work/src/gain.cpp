@@ -73,7 +73,7 @@ namespace {
 		reduce(pcaset, pcaset_mean, 1, CV_REDUCE_SUM);
 
 		// compute PCA and transform to reduced eigen space
-		PCA pca(pcaset, Mat(), PCA::DATA_AS_ROW, AppComponents);
+		PCA pca(pcaset, Mat(), CV_PCA_DATA_AS_ROW, AppComponents);
 		Mat reduced = pcaset * pca.eigenvectors.t();
 
 		// EXTRA: scale the non-mean values of the apperance space appropriately
