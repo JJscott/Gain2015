@@ -176,7 +176,7 @@ namespace gain {
 
 		// meta-data	
 		string str;
-		int rows, cols;
+		int rows = -1, cols = -1;
 		float cellHeight, cellSize, xllcorner, yllcorner,
 			noData = numeric_limits<float>::quiet_NaN();
 

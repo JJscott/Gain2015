@@ -522,7 +522,7 @@ typedef enum {
 						   raw file */
 #define TIFFTAG_ORIGINALRAWFILEDATA	50828	/* &contents of the original
 						   raw file */
-#define TIFFTAG_ACTIVEAREA		50829	/* &active (non-masked) pixels
+#define TIFFTAG_ACTIVEAREA		50829	/* &curveActive (non-masked) pixels
 						   of the sensor */
 #define TIFFTAG_MASKEDAREAS		50830	/* &list of coordinates
 						   of fully masked pixels */
