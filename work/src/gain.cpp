@@ -13,6 +13,7 @@
 #include "opencv_util.hpp"
 #include "gain.hpp"
 #include "terrain.hpp"
+#include "terrain_flow.hpp"
 
 
 using namespace cv;
@@ -601,6 +602,19 @@ namespace gain {
 						params
 					);
 				}
+
+				// Addition (flow enforcement)
+				if (params.flowAlgorithm == synthesis_params::ENFORCE_FLOW_HEIGHTOFFSET) {
+					Mat reconstructed;
+					remap(examplePyramid[level], reconstructed, synthPyramid[level], Mat(), INTER_LINEAR);
+					reconstructed += heightoffsetPyramid[level];
+
+					// caluclate the change in height required to enforce flow
+					Mat enforced = scott::flowCarveTerrain(reconstructed);
+					heightoffsetPyramid[level] += enforced - reconstructed;
+				}
+
+				// TODO constraint enforcement
 			}
 
 

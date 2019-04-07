@@ -14,6 +14,9 @@ SET(sources
 	"terrain.hpp"
 	"terrain.cpp"
 
+	"terrain_fill.hpp"
+	"terrain_flow.hpp"
+
 	"gain.hpp"
 	"gain.cpp"
 
